@@ -99,7 +99,8 @@ export default function ProcedurePingApp() {
 
   // Resident Feed State
   const [availableProcedures, setAvailableProcedures] = useState<any[]>([]);
-  const [claimStatus, setClaimStatus] = useState<string | null>(null);
+  const [activeClaim, setActiveClaim] = useState<any>(null);
+  const [claimSecondsRemaining, setClaimSecondsRemaining] = useState<number>(0);
 
   // 1. Initial Verification of Passcode and Local User ID
   useEffect(() => {
@@ -147,6 +148,23 @@ export default function ProcedurePingApp() {
       supabase.removeChannel(channel);
     };
   }, [currentUser, activeBroadcast]);
+
+// Live arrival countdown timer for resident
+  useEffect(() => {
+    if (!activeClaim || claimSecondsRemaining <= 0) return;
+
+    const timer = setInterval(() => {
+      setClaimSecondsRemaining((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [activeClaim, claimSecondsRemaining]);
 
   async function fetchUsersAndVerify() {
     const { data: users, error } = await supabase
@@ -268,15 +286,15 @@ export default function ProcedurePingApp() {
     }
   }
 
-  // Resident: Claim Procedure
-  async function handleClaim(id: string) {
+// Resident: Claim Procedure
+  async function handleClaim(procedure: any) {
     if (!currentUser || currentUser.role !== 'resident') return;
 
     const displayName = `${currentUser.full_name} (${currentUser.grade_detail || currentUser.stage})`;
 
     try {
       const { data, error } = await supabase.rpc('claim_procedure', {
-        target_procedure_id: id,
+        target_procedure_id: procedure.id,
         claiming_trainee_id: currentUser.id,
         claiming_trainee_name: displayName,
       });
@@ -287,11 +305,12 @@ export default function ProcedurePingApp() {
       }
 
       if (data?.success) {
-        setClaimStatus(`Claimed! Head to ${data.procedure.location}`);
+        const durationMinutes = procedure.ready_in_minutes > 0 ? procedure.ready_in_minutes : 5;
+        setClaimSecondsRemaining(durationMinutes * 60);
+        setActiveClaim(data.procedure);
       } else {
-        setClaimStatus('Opportunity already claimed by another resident!');
+        alert('Opportunity already claimed by another resident!');
       }
-      setTimeout(() => setClaimStatus(null), 4000);
     } catch (err) {
       console.error(err);
     }
@@ -575,71 +594,108 @@ export default function ProcedurePingApp() {
         </section>
       )}
 
-      {/* ================= RESIDENT VIEW ================= */}
+{/* ================= RESIDENT VIEW ================= */}
       {currentUser.role === 'resident' && (
         <section className="flex-1 flex flex-col gap-3">
-          {claimStatus && (
-            <div className="p-3 bg-slate-900 text-white font-semibold text-center text-xs rounded-xl shadow-md">
-              {claimStatus}
-            </div>
-          )}
+          {/* PERSISTENT ACTIVE MISSION CARD */}
+          {activeClaim ? (
+            <div className="bg-emerald-600 text-white p-6 rounded-3xl shadow-xl flex flex-col items-center text-center animate-in fade-in zoom-in-95 duration-200">
+              <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center mb-2">
+                <MapPin className="w-6 h-6 text-white animate-bounce" />
+              </div>
 
-          <div className="flex justify-between items-center mb-0.5">
-            <div>
-              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-600">
-                Available at {currentUser.hospital}
-              </h2>
-              <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md">
-                Stage: {currentUser.grade_detail || currentUser.stage}
+              <span className="text-[11px] font-black uppercase tracking-widest text-emerald-200">
+                Opportunity Secured
               </span>
-            </div>
-            <span className="text-[10px] text-slate-400 font-medium">Live sync</span>
-          </div>
 
-          {eligibleProcedures.length === 0 ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-center p-8 border-2 border-dashed border-slate-200 rounded-3xl">
-              <Clock className="w-8 h-8 text-slate-300 mb-2" />
-              <p className="text-sm font-bold text-slate-600">No procedures currently open</p>
-              <p className="text-xs text-slate-400 mt-1 max-w-xs">
-                Procedures broadcast at {currentUser.hospital} suited for your stage will appear here instantly.
+              <h2 className="text-2xl font-black mt-1 leading-tight">
+                Go to {activeClaim.location}
+              </h2>
+
+              <p className="text-sm font-semibold text-emerald-100 mt-1">
+                {activeClaim.procedure_name} with {activeClaim.consultant_name}
               </p>
+
+              {/* Live Countdown Clock */}
+              <div className="bg-slate-900/40 border border-white/20 rounded-2xl px-5 py-3 mt-4 w-full flex items-center justify-between">
+                <span className="text-xs font-bold text-emerald-100 flex items-center gap-1.5">
+                  <Clock className="w-4 h-4" /> Ready in:
+                </span>
+                <span className="font-mono text-xl font-black tracking-wider text-white">
+                  {Math.floor(claimSecondsRemaining / 60)}:
+                  {String(claimSecondsRemaining % 60).padStart(2, '0')}
+                </span>
+              </div>
+
+              <p className="text-[11px] text-emerald-200 mt-3">
+                This banner will remain on your screen until the scheduled start time.
+              </p>
+
+              <button
+                type="button"
+                onClick={() => setActiveClaim(null)}
+                className="w-full mt-4 py-3 bg-white text-emerald-950 hover:bg-emerald-50 font-black text-xs rounded-xl shadow-md transition active:scale-[0.98]"
+              >
+                I Have Arrived in Theatre
+              </button>
             </div>
           ) : (
-            eligibleProcedures.map((item) => (
-              <div
-                key={item.id}
-                className="bg-white border-2 border-emerald-500/20 hover:border-emerald-500/40 p-4 rounded-3xl shadow-sm flex flex-col gap-3 transition"
-              >
-                <div className="flex justify-between items-start">
-                  <div>
-                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md">
-                      {item.ready_in_minutes === 0 ? 'Ready Now' : `Ready in ${item.ready_in_minutes} mins`}
-                    </span>
-                    <h3 className="font-black text-base text-slate-900 mt-1">{item.procedure_name}</h3>
-                    <div className="text-xs font-bold text-slate-700 mt-0.5 flex items-center gap-1.5">
-                      <User className="w-3.5 h-3.5 text-slate-400" />
-                      with <span className="text-slate-950 underline decoration-slate-300 underline-offset-2">{item.consultant_name}</span>
-                    </div>
-                  </div>
+            <>
+              <div className="flex justify-between items-center mb-0.5">
+                <div>
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-slate-600">
+                    Available at {currentUser.hospital}
+                  </h2>
+                  <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md">
+                    Stage: {currentUser.grade_detail || currentUser.stage}
+                  </span>
                 </div>
-
-                <div className="flex items-center text-xs font-bold text-slate-600 gap-1.5 bg-slate-50 p-2 rounded-xl">
-                  <MapPin className="w-4 h-4 text-slate-400" />
-                  {item.location} ({item.hospital_id})
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => handleClaim(item.id)}
-                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl transition active:scale-[0.98] cursor-pointer shadow-md"
-                >
-                  Accept Procedure
-                </button>
+                <span className="text-[10px] text-slate-400 font-medium">Live sync</span>
               </div>
-            ))
+
+              {eligibleProcedures.length === 0 ? (
+                <div className="flex-1 flex flex-col items-center justify-center text-center p-8 border-2 border-dashed border-slate-200 rounded-3xl">
+                  <Clock className="w-8 h-8 text-slate-300 mb-2" />
+                  <p className="text-sm font-bold text-slate-600">No procedures currently open</p>
+                  <p className="text-xs text-slate-400 mt-1 max-w-xs">
+                    Procedures broadcast at {currentUser.hospital} suited for your stage will appear here instantly.
+                  </p>
+                </div>
+              ) : (
+                eligibleProcedures.map((item) => (
+                  <div
+                    key={item.id}
+                    className="bg-white border-2 border-emerald-500/20 hover:border-emerald-500/40 p-4 rounded-3xl shadow-sm flex flex-col gap-3 transition"
+                  >
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md">
+                          {item.ready_in_minutes === 0 ? 'Ready Now' : `Ready in ${item.ready_in_minutes} mins`}
+                        </span>
+                        <h3 className="font-black text-base text-slate-900 mt-1">{item.procedure_name}</h3>
+                        <div className="text-xs font-bold text-slate-700 mt-0.5 flex items-center gap-1.5">
+                          <User className="w-3.5 h-3.5 text-slate-400" />
+                          with <span className="text-slate-950 underline decoration-slate-300 underline-offset-2">{item.consultant_name}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center text-xs font-bold text-slate-600 gap-1.5 bg-slate-50 p-2 rounded-xl">
+                      <MapPin className="w-4 h-4 text-slate-400" />
+                      {item.location} ({item.hospital_id})
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleClaim(item)}
+                      className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl transition active:scale-[0.98] cursor-pointer shadow-md"
+                    >
+                      Accept Procedure
+                    </button>
+                  </div>
+                ))
+              )}
+            </>
           )}
         </section>
       )}
-    </main>
-  );
-}
