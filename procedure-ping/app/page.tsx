@@ -12,10 +12,11 @@ import {
   LogOut,
   Building2,
   Lock,
-  UserCheck,
+  UserPlus,
 } from 'lucide-react';
 
 type HospitalSite = 'BNH' | 'RHCH';
+type Role = 'consultant' | 'resident';
 type TrainingStage = 'novice' | 'stage_1' | 'stage_2' | 'stage_3';
 
 const TRAINING_STAGES: { id: TrainingStage; label: string; sub: string }[] = [
@@ -66,14 +67,13 @@ const PROCEDURES = [
 
 const TIMINGS = [0, 5, 10, 15];
 
-interface UserRecord {
+interface UserProfile {
   id: string;
-  full_name: string;
-  role: 'consultant' | 'resident';
+  name: string;
+  role: Role;
   hospital: HospitalSite;
   stage?: TrainingStage;
   grade_detail?: string;
-  is_active: boolean;
 }
 
 interface MissionData {
@@ -89,18 +89,35 @@ export default function ProcedurePingApp() {
   const [passcodeInput, setPasscodeInput] = useState('');
   const [passcodeError, setPasscodeError] = useState(false);
 
-  const [activeUsers, setActiveUsers] = useState<UserRecord[]>([]);
-  const [currentUser, setCurrentUser] = useState<UserRecord | null>(null);
+  // User Profile
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+
+  // Registration Form State
+  const [regName, setRegName] = useState('');
+  const [regRole, setRegRole] = useState<Role>('consultant');
+  const [regHospital, setRegHospital] = useState<HospitalSite>('BNH');
+  const [regStage, setRegStage] = useState<TrainingStage>('novice');
+  const [regGrade, setRegGrade] = useState('');
+
+  // Resident Active Mission
   const [activeMission, setActiveMission] = useState<MissionData | null>(null);
 
-  // 1. Initial Load: Check Auth, User, and Existing Mission
+  // Check Local Auth and Saved Profile on Mount
   useEffect(() => {
     const savedAuth = localStorage.getItem('procedure_ping_authenticated');
     if (savedAuth === 'true') {
       setIsAuthenticated(true);
-      fetchUsersAndVerify();
     } else {
       setIsAuthenticated(false);
+    }
+
+    const savedProfile = localStorage.getItem('procedure_ping_user_profile');
+    if (savedProfile) {
+      try {
+        setCurrentUser(JSON.parse(savedProfile));
+      } catch (e) {
+        localStorage.removeItem('procedure_ping_user_profile');
+      }
     }
 
     const savedMission = localStorage.getItem('procedure_ping_mission_locked');
@@ -117,29 +134,6 @@ export default function ProcedurePingApp() {
       }
     }
   }, []);
-
-  async function fetchUsersAndVerify() {
-    const { data: users, error } = await supabase
-      .from('department_users')
-      .select('*')
-      .eq('is_active', true)
-      .order('full_name', { ascending: true });
-
-    if (error || !users) return;
-
-    setActiveUsers(users);
-
-    const savedUserId = localStorage.getItem('procedure_ping_user_id');
-    if (savedUserId) {
-      const match = users.find((u) => u.id === savedUserId);
-      if (match) {
-        setCurrentUser(match);
-      } else {
-        localStorage.removeItem('procedure_ping_user_id');
-        setCurrentUser(null);
-      }
-    }
-  }
 
   async function handlePasscodeSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -158,28 +152,38 @@ export default function ProcedurePingApp() {
     ) {
       localStorage.setItem('procedure_ping_authenticated', 'true');
       setIsAuthenticated(true);
-      fetchUsersAndVerify();
     } else {
       setPasscodeError(true);
     }
   }
 
-  function handleSelectUser(user: UserRecord) {
-    localStorage.setItem('procedure_ping_user_id', user.id);
-    setCurrentUser(user);
+  function handleRegisterSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!regName.trim()) return;
+
+    const profile: UserProfile = {
+      id: `user_${Date.now()}`,
+      name: regName.trim(),
+      role: regRole,
+      hospital: regHospital,
+      stage: regRole === 'resident' ? regStage : undefined,
+      grade_detail: regRole === 'resident' && regGrade.trim() ? regGrade.trim() : undefined,
+    };
+
+    localStorage.setItem('procedure_ping_user_profile', JSON.stringify(profile));
+    setCurrentUser(profile);
   }
 
   function handleLogout() {
-    if (confirm('Switch user identity?')) {
-      localStorage.removeItem('procedure_ping_user_id');
+    if (confirm('Switch user identity / reset profile?')) {
+      localStorage.removeItem('procedure_ping_user_profile');
       localStorage.removeItem('procedure_ping_mission_locked');
       setCurrentUser(null);
       setActiveMission(null);
-      fetchUsersAndVerify();
     }
   }
 
-  // SCREEN 1: Passcode
+  // SCREEN 1: Department Passcode
   if (!isAuthenticated) {
     return (
       <main className="max-w-md mx-auto min-h-screen bg-slate-900 flex flex-col justify-center p-6 font-sans">
@@ -222,45 +226,157 @@ export default function ProcedurePingApp() {
     );
   }
 
-  // SCREEN 2: User Profile Selection
+  // SCREEN 2: Self Registration Screen
   if (!currentUser) {
     return (
       <main className="max-w-md mx-auto min-h-screen bg-slate-100 flex flex-col p-5 font-sans justify-center">
         <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-200">
           <div className="flex items-center gap-2 mb-1 text-slate-900">
-            <UserCheck className="w-6 h-6 text-emerald-600" />
-            <h1 className="text-xl font-black">Select Your Profile</h1>
+            <UserPlus className="w-6 h-6 text-emerald-600" />
+            <h1 className="text-xl font-black">Set Up Your Profile</h1>
           </div>
           <p className="text-xs text-slate-500 mb-5">
-            Choose your name from the rota list. If your name is missing, contact the department administrator.
+            Enter your details once. Your phone will remember this setup.
           </p>
 
-          <div className="max-h-80 overflow-y-auto space-y-2 pr-1">
-            {activeUsers.map((u) => (
-              <button
-                key={u.id}
-                type="button"
-                onClick={() => handleSelectUser(u)}
-                className="w-full p-3 bg-slate-50 hover:bg-emerald-50 hover:border-emerald-400 border border-slate-200 rounded-2xl flex items-center justify-between text-left transition"
-              >
+          <form onSubmit={handleRegisterSubmit} className="space-y-4">
+            {/* Full Name */}
+            <div>
+              <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                Full Name
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g. Dr. Jane Smith"
+                value={regName}
+                onChange={(e) => setRegName(e.target.value)}
+                className="w-full mt-1 p-3 rounded-xl border border-slate-200 focus:outline-none focus:border-emerald-600 font-bold text-sm text-slate-900"
+              />
+            </div>
+
+            {/* Role: Consultant or Resident */}
+            <div>
+              <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                Role
+              </label>
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                <button
+                  type="button"
+                  onClick={() => setRegRole('consultant')}
+                  className={`py-3 px-4 rounded-xl border text-center font-bold text-xs transition ${
+                    regRole === 'consultant'
+                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                      : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  Consultant
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRegRole('resident')}
+                  className={`py-3 px-4 rounded-xl border text-center font-bold text-xs transition ${
+                    regRole === 'resident'
+                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                      : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  Resident
+                </button>
+              </div>
+            </div>
+
+            {/* Hospital Site */}
+            <div>
+              <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                Primary Hospital Site
+              </label>
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                <button
+                  type="button"
+                  onClick={() => setRegHospital('BNH')}
+                  className={`py-2.5 px-3 rounded-xl border text-center font-bold text-xs transition ${
+                    regHospital === 'BNH'
+                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                      : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  BNH (Basingstoke)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRegHospital('RHCH')}
+                  className={`py-2.5 px-3 rounded-xl border text-center font-bold text-xs transition ${
+                    regHospital === 'RHCH'
+                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                      : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  RHCH (Winchester)
+                </button>
+              </div>
+            </div>
+
+            {/* Resident Stage & Grade */}
+            {regRole === 'resident' && (
+              <div className="space-y-3 pt-1 border-t border-slate-100">
                 <div>
-                  <div className="font-extrabold text-sm text-slate-900">{u.full_name}</div>
-                  <div className="text-[11px] text-slate-500">
-                    {u.hospital} • {u.role === 'consultant' ? 'Consultant' : `${u.grade_detail || u.stage}`}
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    Training Stage
+                  </label>
+                  <div className="grid grid-cols-4 gap-1.5 mt-1">
+                    {TRAINING_STAGES.map((st) => (
+                      <button
+                        key={st.id}
+                        type="button"
+                        onClick={() => setRegStage(st.id)}
+                        className={`py-2 px-1 rounded-xl border text-center transition flex flex-col items-center justify-center ${
+                          regStage === st.id
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm font-bold'
+                            : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        <span className="font-extrabold text-[11px]">{st.label}</span>
+                        <span
+                          className={`text-[9px] ${
+                            regStage === st.id ? 'text-emerald-100' : 'text-slate-400'
+                          }`}
+                        >
+                          {st.sub}
+                        </span>
+                      </button>
+                    ))}
                   </div>
                 </div>
-                <span className="text-xs font-bold text-emerald-700 uppercase bg-white px-2 py-1 rounded-lg border border-slate-200">
-                  Select
-                </span>
-              </button>
-            ))}
-          </div>
+
+                <div>
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    Grade / Rota Detail (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. CT2, ST4, Fellow"
+                    value={regGrade}
+                    onChange={(e) => setRegGrade(e.target.value)}
+                    className="w-full mt-1 p-2.5 rounded-xl border border-slate-200 focus:outline-none focus:border-emerald-600 font-bold text-xs text-slate-900"
+                  />
+                </div>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              className="w-full mt-2 py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-sm rounded-xl shadow-lg transition"
+            >
+              Save Profile & Start
+            </button>
+          </form>
         </div>
       </main>
     );
   }
 
-  // SCREEN 3: RESIDENT ACTIVE MISSION (Isolated completely from realtime feed)
+  // SCREEN 3: Active Procedure Mission (Locked exclusively for Resident)
   if (currentUser.role === 'resident' && activeMission) {
     return (
       <ResidentMissionView
@@ -274,7 +390,7 @@ export default function ProcedurePingApp() {
     );
   }
 
-  // MAIN APP VIEW: Consultant or Resident
+  // SCREEN 4: Main Application View
   return (
     <main className="max-w-md mx-auto min-h-screen bg-slate-50 flex flex-col justify-between p-4 font-sans pb-10">
       <header className="flex justify-between items-center bg-slate-900 text-white p-3 rounded-2xl mb-3 shadow-md">
@@ -282,9 +398,9 @@ export default function ProcedurePingApp() {
           <Stethoscope className="w-5 h-5 text-emerald-400 shrink-0" />
           <div>
             <div className="font-extrabold text-sm leading-tight flex items-center gap-1.5 flex-wrap">
-              <span>{currentUser.full_name}</span>
+              <span>{currentUser.name}</span>
               <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-800 text-emerald-400 font-bold border border-slate-700">
-                {currentUser.role === 'consultant' ? 'Consultant' : currentUser.grade_detail || currentUser.stage}
+                {currentUser.role === 'consultant' ? 'Consultant' : 'Resident'}
               </span>
             </div>
             <div className="text-[10px] text-slate-400 font-medium flex items-center gap-1 mt-0.5">
@@ -295,7 +411,7 @@ export default function ProcedurePingApp() {
         </div>
         <button
           onClick={handleLogout}
-          title="Switch User"
+          title="Switch User / Edit Profile"
           className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition shrink-0"
         >
           <LogOut className="w-4 h-4" />
@@ -318,7 +434,7 @@ export default function ProcedurePingApp() {
 }
 
 /* ==========================================================================
-   ISOLATED RESIDENT ACTIVE MISSION COMPONENT
+   RESIDENT ACTIVE MISSION VIEW
    ========================================================================== */
 function ResidentMissionView({
   mission,
@@ -326,7 +442,7 @@ function ResidentMissionView({
   onArrived,
 }: {
   mission: MissionData;
-  user: UserRecord;
+  user: UserProfile;
   onArrived: () => void;
 }) {
   const [secondsRemaining, setSecondsRemaining] = useState<number>(() =>
@@ -352,7 +468,7 @@ function ResidentMissionView({
         <span className="font-bold flex items-center gap-1.5 text-white">
           <Stethoscope className="w-4 h-4 text-emerald-400" /> Active Procedure Mission
         </span>
-        <span>{user.full_name}</span>
+        <span>{user.name}</span>
       </div>
 
       <div className="bg-emerald-600 text-white p-7 rounded-3xl shadow-2xl flex flex-col items-center text-center my-auto">
@@ -399,13 +515,13 @@ function ResidentMissionView({
 }
 
 /* ==========================================================================
-   RESIDENT FEED COMPONENT
+   RESIDENT FEED VIEW
    ========================================================================== */
 function ResidentFeed({
   currentUser,
   onClaimSuccess,
 }: {
-  currentUser: UserRecord;
+  currentUser: UserProfile;
   onClaimSuccess: (mission: MissionData) => void;
 }) {
   const [procedures, setProcedures] = useState<any[]>([]);
@@ -458,7 +574,7 @@ function ResidentFeed({
   }
 
   async function handleClaim(p: any) {
-    const displayName = `${currentUser.full_name} (${currentUser.grade_detail || currentUser.stage})`;
+    const displayName = `${currentUser.name} (${currentUser.grade_detail || currentUser.stage})`;
     const mins = p.ready_in_minutes > 0 ? p.ready_in_minutes : 5;
     const expiresAt = Date.now() + mins * 60 * 1000;
 
@@ -470,10 +586,8 @@ function ResidentFeed({
       expires_at: expiresAt,
     };
 
-    // Lock local view FIRST immediately
     onClaimSuccess(mission);
 
-    // Then notify database
     try {
       await supabase
         .from('procedures')
@@ -557,9 +671,9 @@ function ResidentFeed({
 }
 
 /* ==========================================================================
-   CONSULTANT PANEL COMPONENT
+   CONSULTANT PANEL VIEW
    ========================================================================== */
-function ConsultantPanel({ currentUser }: { currentUser: UserRecord }) {
+function ConsultantPanel({ currentUser }: { currentUser: UserProfile }) {
   const [proc, setProc] = useState(PROCEDURES[0]);
   const [location, setLocation] = useState(HOSPITALS[currentUser.hospital].locations[0]);
   const [timing, setTiming] = useState(5);
@@ -614,7 +728,7 @@ function ConsultantPanel({ currentUser }: { currentUser: UserRecord }) {
         .insert([
           {
             consultant_id: currentUser.id,
-            consultant_name: currentUser.full_name,
+            consultant_name: currentUser.name,
             procedure_name: proc,
             location: location,
             ready_in_minutes: timing,
