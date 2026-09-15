@@ -2,16 +2,43 @@
 
 import React, { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Bell, CheckCircle2, Clock, MapPin, Stethoscope, User, LogOut, ShieldAlert } from 'lucide-react';
+import { Bell, CheckCircle2, Clock, MapPin, Stethoscope, User, LogOut, Building2 } from 'lucide-react';
+
+type HospitalSite = 'BNH' | 'RHCH';
+
+const HOSPITALS: Record<HospitalSite, { name: string; label: string; locations: string[] }> = {
+  BNH: {
+    name: 'Basingstoke & North Hampshire Hospital',
+    label: 'BNH (Basingstoke)',
+    locations: [
+      'Main Th 1', 'Main Th 2', 'Main Th 3', 'Main Th 4', 'Main Th 5', 'Main Th 6', 'Main Th 7',
+      'DTC 1', 'DTC 2', 'DTC 3', 'DTC 4',
+      'Maternity Th',
+      'LW Room 1', 'LW Room 2', 'LW Room 3', 'LW Room 4',
+      'LW Room 5', 'LW Room 6', 'LW Room 7', 'LW Room 8',
+    ],
+  },
+  RHCH: {
+    name: 'Royal Hampshire County Hospital',
+    label: 'RHCH (Winchester)',
+    locations: [
+      'Theatre 1', 'Theatre 2', 'Theatre 3', 'Theatre 4', 'Theatre 5',
+      'TCA', 'TCB', 'TCC',
+      'Heathcote A', 'Heathcote B',
+      'HOC 1', 'HOC 2',
+      'Labour Ward',
+    ],
+  },
+};
 
 const PROCEDURES = ['ETT', 'Arterial Line', 'CVC', 'Spinal', 'Lumbar Puncture'];
-const LOCATIONS = ['Theatre 1', 'Theatre 2', 'Theatre 3', 'Theatre 4', 'PACU', 'ICU'];
 const TIMINGS = [0, 5, 10, 15];
 
 interface UserProfile {
   id: string;
   name: string;
   role: 'consultant' | 'resident';
+  hospital: HospitalSite;
   grade?: string;
 }
 
@@ -22,11 +49,12 @@ export default function ProcedurePingApp() {
   // Setup Form State
   const [setupName, setSetupName] = useState('');
   const [setupRole, setSetupRole] = useState<'consultant' | 'resident'>('consultant');
+  const [setupHospital, setSetupHospital] = useState<HospitalSite>('BNH');
   const [setupGrade, setSetupGrade] = useState('CT1');
 
   // Consultant Broadcast State
   const [proc, setProc] = useState(PROCEDURES[0]);
-  const [location, setLocation] = useState(LOCATIONS[0]);
+  const [location, setLocation] = useState(HOSPITALS.BNH.locations[0]);
   const [timing, setTiming] = useState(5);
   const [activeBroadcast, setActiveBroadcast] = useState<any>(null);
   const [isBroadcasting, setIsBroadcasting] = useState(false);
@@ -40,7 +68,12 @@ export default function ProcedurePingApp() {
     const saved = localStorage.getItem('procedure_ping_profile');
     if (saved) {
       try {
-        setProfile(JSON.parse(saved));
+        const loaded: UserProfile = JSON.parse(saved);
+        setProfile(loaded);
+        // Default location picker to first theatre of user's hospital
+        if (HOSPITALS[loaded.hospital]) {
+          setLocation(HOSPITALS[loaded.hospital].locations[0]);
+        }
       } catch (e) {
         setIsSettingUp(true);
       }
@@ -49,17 +82,22 @@ export default function ProcedurePingApp() {
     }
   }, []);
 
-  // 2. Realtime listener
+  // 2. Realtime listener scoped to the user's hospital site
   useEffect(() => {
     if (!profile) return;
 
-    fetchActiveProcedures();
+    fetchActiveProcedures(profile.hospital);
 
     const channel = supabase
-      .channel('realtime:procedures')
+      .channel(`realtime:procedures:${profile.hospital}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'procedures' },
+        {
+          event: '*',
+          schema: 'public',
+          table: 'procedures',
+          filter: `hospital_id=eq.${profile.hospital}`,
+        },
         (payload) => {
           if (payload.eventType === 'INSERT') {
             setAvailableProcedures((prev) => [payload.new, ...prev]);
@@ -80,10 +118,11 @@ export default function ProcedurePingApp() {
     };
   }, [profile, activeBroadcast]);
 
-  async function fetchActiveProcedures() {
+  async function fetchActiveProcedures(hospital: HospitalSite) {
     const { data, error } = await supabase
       .from('procedures')
       .select('*')
+      .eq('hospital_id', hospital)
       .eq('status', 'open')
       .order('created_at', { ascending: false });
 
@@ -101,16 +140,18 @@ export default function ProcedurePingApp() {
       id: crypto.randomUUID(),
       name: setupName.trim(),
       role: setupRole,
+      hospital: setupHospital,
       grade: setupRole === 'resident' ? setupGrade : undefined,
     };
 
     localStorage.setItem('procedure_ping_profile', JSON.stringify(newProfile));
     setProfile(newProfile);
+    setLocation(HOSPITALS[newProfile.hospital].locations[0]);
     setIsSettingUp(false);
   }
 
   function handleResetProfile() {
-    if (confirm('Reset your profile and role?')) {
+    if (confirm('Reset your profile, hospital, and role?')) {
       localStorage.removeItem('procedure_ping_profile');
       setProfile(null);
       setIsSettingUp(true);
@@ -133,7 +174,7 @@ export default function ProcedurePingApp() {
             location: location,
             ready_in_minutes: timing,
             status: 'open',
-            hospital_id: 'HOSP_1',
+            hospital_id: profile.hospital,
           },
         ])
         .select()
@@ -188,17 +229,37 @@ export default function ProcedurePingApp() {
     return (
       <main className="max-w-md mx-auto min-h-screen bg-slate-100 flex flex-col justify-center p-5 font-sans">
         <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-200">
-          <div className="flex items-center gap-2 mb-4 text-slate-900">
+          <div className="flex items-center gap-2 mb-3 text-slate-900">
             <Stethoscope className="w-6 h-6 text-emerald-600" />
             <h1 className="text-xl font-black">Welcome to ProcedurePing</h1>
           </div>
-          <p className="text-sm text-slate-600 mb-6">
-            Identify yourself so colleagues and residents know who is broadcasting or claiming.
+          <p className="text-xs text-slate-600 mb-5">
+            Select your trust base hospital and role so you only receive alerts for your site.
           </p>
 
           <form onSubmit={handleSaveProfile} className="space-y-4">
             <div>
-              <label className="text-xs font-bold uppercase text-slate-500">I am a:</label>
+              <label className="text-xs font-bold uppercase text-slate-500">Base Hospital</label>
+              <div className="grid grid-cols-2 gap-2 mt-1.5">
+                {(['BNH', 'RHCH'] as HospitalSite[]).map((h) => (
+                  <button
+                    key={h}
+                    type="button"
+                    onClick={() => setSetupHospital(h)}
+                    className={`py-3 px-2 rounded-xl font-bold text-xs border transition text-center ${
+                      setupHospital === h
+                        ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200'
+                    }`}
+                  >
+                    {HOSPITALS[h].label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-bold uppercase text-slate-500">Role</label>
               <div className="grid grid-cols-2 gap-2 mt-1.5">
                 <button
                   type="button"
@@ -258,7 +319,7 @@ export default function ProcedurePingApp() {
               type="submit"
               className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-base rounded-2xl shadow-lg transition mt-4"
             >
-              Get Started
+              Save & Start
             </button>
           </form>
         </div>
@@ -266,9 +327,11 @@ export default function ProcedurePingApp() {
     );
   }
 
+  const currentHospitalData = HOSPITALS[profile.hospital];
+
   return (
     <main className="max-w-md mx-auto min-h-screen bg-slate-50 flex flex-col justify-between p-4 font-sans pb-10">
-      {/* Top Header - Locks identity */}
+      {/* Top Header */}
       <header className="flex justify-between items-center bg-slate-900 text-white p-3.5 rounded-2xl mb-4 shadow-md">
         <div className="flex items-center gap-2">
           <Stethoscope className="w-5 h-5 text-emerald-400" />
@@ -279,11 +342,15 @@ export default function ProcedurePingApp() {
                 {profile.role === 'consultant' ? 'Consultant' : profile.grade || 'Resident'}
               </span>
             </div>
+            <div className="text-[11px] text-slate-400 font-medium flex items-center gap-1 mt-0.5">
+              <Building2 className="w-3 h-3 text-slate-500" />
+              {currentHospitalData.label}
+            </div>
           </div>
         </div>
         <button
           onClick={handleResetProfile}
-          title="Switch User / Reset Profile"
+          title="Switch Hospital / User"
           className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
         >
           <LogOut className="w-4 h-4" />
@@ -292,7 +359,7 @@ export default function ProcedurePingApp() {
 
       {/* ================= CONSULTANT VIEW ================= */}
       {profile.role === 'consultant' && (
-        <section className="flex-1 flex flex-col gap-5">
+        <section className="flex-1 flex flex-col gap-4">
           {activeBroadcast && activeBroadcast.status === 'open' ? (
             <div className="bg-amber-50 border-2 border-amber-300 rounded-3xl p-6 text-center shadow-md">
               <div className="animate-pulse flex justify-center mb-3">
@@ -300,7 +367,7 @@ export default function ProcedurePingApp() {
               </div>
               <h2 className="text-xl font-black text-amber-950">Procedure Broadcasted</h2>
               <p className="text-slate-800 font-semibold mt-1">
-                {activeBroadcast.procedure_name} in {activeBroadcast.location}
+                {activeBroadcast.procedure_name} in {activeBroadcast.location} ({profile.hospital})
               </p>
               <p className="text-xs text-amber-800 mt-2">Waiting for a resident to accept...</p>
               <button
@@ -333,13 +400,13 @@ export default function ProcedurePingApp() {
             <>
               <div>
                 <label className="text-xs font-bold uppercase tracking-wider text-slate-500">1. Procedure</label>
-                <div className="grid grid-cols-2 gap-2 mt-2">
+                <div className="grid grid-cols-2 gap-2 mt-1.5">
                   {PROCEDURES.map((p) => (
                     <button
                       key={p}
                       type="button"
                       onClick={() => setProc(p)}
-                      className={`p-3 text-sm font-semibold rounded-xl border text-left transition ${
+                      className={`p-2.5 text-xs font-semibold rounded-xl border text-left transition ${
                         proc === p
                           ? 'border-emerald-600 bg-emerald-50 text-emerald-950 shadow-sm'
                           : 'bg-white border-slate-200 text-slate-700'
@@ -352,17 +419,23 @@ export default function ProcedurePingApp() {
               </div>
 
               <div>
-                <label className="text-xs font-bold uppercase tracking-wider text-slate-500">2. Location</label>
-                <div className="grid grid-cols-3 gap-2 mt-2">
-                  {LOCATIONS.map((l) => (
+                <div className="flex justify-between items-center">
+                  <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                    2. Location ({profile.hospital})
+                  </label>
+                  <span className="text-[10px] text-slate-400">{currentHospitalData.locations.length} rooms</span>
+                </div>
+                {/* Scrollable grid for hospitals with many rooms */}
+                <div className="grid grid-cols-3 gap-1.5 mt-1.5 max-h-48 overflow-y-auto p-1 bg-slate-100 rounded-2xl border border-slate-200">
+                  {currentHospitalData.locations.map((l) => (
                     <button
                       key={l}
                       type="button"
                       onClick={() => setLocation(l)}
-                      className={`p-2.5 text-xs font-semibold rounded-xl border text-center transition ${
+                      className={`p-2 text-[11px] font-semibold rounded-xl border text-center transition truncate ${
                         location === l
-                          ? 'border-emerald-600 bg-emerald-50 text-emerald-950 shadow-sm'
-                          : 'bg-white border-slate-200 text-slate-700'
+                          ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm font-bold'
+                          : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300'
                       }`}
                     >
                       {l}
@@ -373,7 +446,7 @@ export default function ProcedurePingApp() {
 
               <div>
                 <label className="text-xs font-bold uppercase tracking-wider text-slate-500">3. Ready In</label>
-                <div className="grid grid-cols-4 gap-2 mt-2">
+                <div className="grid grid-cols-4 gap-2 mt-1.5">
                   {TIMINGS.map((t) => (
                     <button
                       key={t}
@@ -395,9 +468,9 @@ export default function ProcedurePingApp() {
                 type="button"
                 onClick={handleBroadcast}
                 disabled={isBroadcasting}
-                className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white font-black text-lg rounded-2xl shadow-lg transition active:scale-[0.98] mt-auto cursor-pointer"
+                className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white font-black text-lg rounded-2xl shadow-lg transition active:scale-[0.98] mt-2 cursor-pointer"
               >
-                {isBroadcasting ? 'Broadcasting...' : 'Broadcast Opportunity'}
+                {isBroadcasting ? 'Broadcasting...' : `Broadcast in ${location}`}
               </button>
             </>
           )}
@@ -414,16 +487,18 @@ export default function ProcedurePingApp() {
           )}
 
           <div className="flex justify-between items-center mb-1">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">Available Procedures</h2>
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              Live in {profile.hospital}
+            </h2>
             <span className="text-[11px] text-slate-400 font-medium">Real-time alerts active</span>
           </div>
 
           {availableProcedures.filter((p) => p.status === 'open').length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center text-center p-8 border-2 border-dashed border-slate-200 rounded-3xl">
               <Clock className="w-10 h-10 text-slate-300 mb-2" />
-              <p className="text-base font-bold text-slate-600">No active procedures</p>
+              <p className="text-base font-bold text-slate-600">No active procedures at {profile.hospital}</p>
               <p className="text-xs text-slate-400 mt-1">
-                When a consultant posts an opportunity, it will appear here instantly with their name.
+                When a consultant at {profile.hospital} broadcasts, it will appear here instantly.
               </p>
             </div>
           ) : (
@@ -449,7 +524,7 @@ export default function ProcedurePingApp() {
 
                   <div className="flex items-center text-xs font-bold text-slate-600 gap-1.5 bg-slate-50 p-2.5 rounded-xl">
                     <MapPin className="w-4 h-4 text-slate-400" />
-                    {item.location}
+                    {item.location} ({item.hospital_id})
                   </div>
 
                   <button
