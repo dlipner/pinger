@@ -13,7 +13,6 @@ import {
   Building2,
   Lock,
   UserCheck,
-  ShieldAlert,
 } from 'lucide-react';
 
 type HospitalSite = 'BNH' | 'RHCH';
@@ -167,7 +166,6 @@ export default function ProcedurePingApp() {
         setCurrentUser(match);
         setLocation(HOSPITALS[match.hospital].locations[0]);
       } else {
-        // User was rotated out or deactivated
         localStorage.removeItem('procedure_ping_user_id');
         setCurrentUser(null);
       }
@@ -342,7 +340,7 @@ export default function ProcedurePingApp() {
     );
   }
 
-  // SCREEN 2: Select Name From Active Roster (Zero typing, instant check)
+  // SCREEN 2: Select Name From Active Roster
   if (!currentUser) {
     return (
       <main className="max-w-md mx-auto min-h-screen bg-slate-100 flex flex-col p-5 font-sans justify-center">
@@ -352,7 +350,7 @@ export default function ProcedurePingApp() {
             <h1 className="text-xl font-black">Select Your Profile</h1>
           </div>
           <p className="text-xs text-slate-500 mb-5">
-            Choose your name from the current rota list. If your name is missing, contact the department administrator.
+            Choose your name from the rota list. If your name is missing, contact the department administrator.
           </p>
 
           <div className="max-h-80 overflow-y-auto space-y-2 pr-1">
@@ -463,7 +461,7 @@ export default function ProcedurePingApp() {
             </div>
           ) : (
             <>
-              {/* Procedures */}
+              {/* 1. Procedures */}
               <div>
                 <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">1. Procedure</label>
                 <div className="grid grid-cols-2 gap-1.5 mt-1 max-h-44 overflow-y-auto p-1 bg-slate-100 rounded-2xl border border-slate-200">
@@ -475,7 +473,7 @@ export default function ProcedurePingApp() {
                       className={`p-2 text-xs font-semibold rounded-xl border text-left transition ${
                         proc === p
                           ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm font-bold'
-                          : 'bg-white border-slate-200 text-slate-700'
+                          : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300'
                       }`}
                     >
                       {p}
@@ -484,12 +482,15 @@ export default function ProcedurePingApp() {
                 </div>
               </div>
 
-              {/* Target Stages */}
+              {/* 2. Target Stages (Updated: Green when selected, White when unselected) */}
               <div>
-                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                  2. Target Training Stage(s)
-                </label>
-                <div className="grid grid-cols-4 gap-1 mt-1">
+                <div className="flex justify-between items-center">
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    2. Target Training Stage(s)
+                  </label>
+                  <span className="text-[10px] text-slate-400">Select 1 or more</span>
+                </div>
+                <div className="grid grid-cols-4 gap-1.5 mt-1">
                   {TRAINING_STAGES.map((st) => {
                     const isSelected = targetStages.includes(st.id);
                     return (
@@ -499,19 +500,21 @@ export default function ProcedurePingApp() {
                         onClick={() => toggleStage(st.id)}
                         className={`py-2 px-1 rounded-xl border text-center transition flex flex-col items-center justify-center ${
                           isSelected
-                            ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
-                            : 'bg-white text-slate-500 border-slate-200 opacity-60'
+                            ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm font-bold'
+                            : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300'
                         }`}
                       >
                         <span className="font-extrabold text-[11px]">{st.label}</span>
-                        <span className="text-[9px] opacity-75">{st.sub}</span>
+                        <span className={`text-[9px] ${isSelected ? 'text-emerald-100 font-medium' : 'text-slate-400'}`}>
+                          {st.sub}
+                        </span>
                       </button>
                     );
                   })}
                 </div>
               </div>
 
-              {/* Location */}
+              {/* 3. Location */}
               <div>
                 <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                   3. Location ({currentUser.hospital})
@@ -534,7 +537,7 @@ export default function ProcedurePingApp() {
                 </div>
               </div>
 
-              {/* Timing */}
+              {/* 4. Ready In */}
               <div>
                 <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">4. Ready In</label>
                 <div className="grid grid-cols-4 gap-1.5 mt-1">
@@ -545,7 +548,7 @@ export default function ProcedurePingApp() {
                       onClick={() => setTiming(t)}
                       className={`p-2 text-xs font-bold rounded-xl border text-center transition ${
                         timing === t
-                          ? 'border-emerald-600 bg-emerald-50 text-emerald-950 font-black'
+                          ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm font-bold'
                           : 'bg-white border-slate-200 text-slate-700'
                       }`}
                     >
