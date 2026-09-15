@@ -2,7 +2,19 @@
 
 import React, { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Bell, CheckCircle2, Clock, MapPin, Stethoscope, User, LogOut, Building2, Check } from 'lucide-react';
+import {
+  Bell,
+  CheckCircle2,
+  Clock,
+  MapPin,
+  Stethoscope,
+  User,
+  LogOut,
+  Building2,
+  Lock,
+  UserCheck,
+  ShieldAlert,
+} from 'lucide-react';
 
 type HospitalSite = 'BNH' | 'RHCH';
 type TrainingStage = 'novice' | 'stage_1' | 'stage_2' | 'stage_3';
@@ -55,25 +67,23 @@ const PROCEDURES = [
 
 const TIMINGS = [0, 5, 10, 15];
 
-interface UserProfile {
+interface UserRecord {
   id: string;
-  name: string;
+  full_name: string;
   role: 'consultant' | 'resident';
   hospital: HospitalSite;
   stage?: TrainingStage;
-  gradeDetail?: string; // e.g., "CT2" or "ST5"
+  grade_detail?: string;
+  is_active: boolean;
 }
 
 export default function ProcedurePingApp() {
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [isSettingUp, setIsSettingUp] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [passcodeInput, setPasscodeInput] = useState('');
+  const [passcodeError, setPasscodeError] = useState(false);
 
-  // Profile Setup Form State
-  const [setupName, setSetupName] = useState('');
-  const [setupRole, setSetupRole] = useState<'consultant' | 'resident'>('consultant');
-  const [setupHospital, setSetupHospital] = useState<HospitalSite>('BNH');
-  const [setupStage, setSetupStage] = useState<TrainingStage>('stage_1');
-  const [setupGradeDetail, setSetupGradeDetail] = useState('CT1');
+  const [activeUsers, setActiveUsers] = useState<UserRecord[]>([]);
+  const [currentUser, setCurrentUser] = useState<UserRecord | null>(null);
 
   // Consultant Broadcast State
   const [proc, setProc] = useState(PROCEDURES[0]);
@@ -92,39 +102,32 @@ export default function ProcedurePingApp() {
   const [availableProcedures, setAvailableProcedures] = useState<any[]>([]);
   const [claimStatus, setClaimStatus] = useState<string | null>(null);
 
-  // 1. Load user profile on launch
+  // 1. Initial Verification of Passcode and Local User ID
   useEffect(() => {
-    const saved = localStorage.getItem('procedure_ping_profile_v2');
-    if (saved) {
-      try {
-        const loaded: UserProfile = JSON.parse(saved);
-        setProfile(loaded);
-        if (HOSPITALS[loaded.hospital]) {
-          setLocation(HOSPITALS[loaded.hospital].locations[0]);
-        }
-      } catch (e) {
-        setIsSettingUp(true);
-      }
+    const savedAuth = localStorage.getItem('procedure_ping_authenticated');
+    if (savedAuth === 'true') {
+      setIsAuthenticated(true);
+      fetchUsersAndVerify();
     } else {
-      setIsSettingUp(true);
+      setIsAuthenticated(false);
     }
   }, []);
 
   // 2. Realtime listener scoped to hospital
   useEffect(() => {
-    if (!profile) return;
+    if (!currentUser) return;
 
-    fetchActiveProcedures(profile.hospital);
+    fetchActiveProcedures(currentUser.hospital);
 
     const channel = supabase
-      .channel(`realtime:procedures:${profile.hospital}`)
+      .channel(`realtime:procedures:${currentUser.hospital}`)
       .on(
         'postgres_changes',
         {
           event: '*',
           schema: 'public',
           table: 'procedures',
-          filter: `hospital_id=eq.${profile.hospital}`,
+          filter: `hospital_id=eq.${currentUser.hospital}`,
         },
         (payload) => {
           if (payload.eventType === 'INSERT') {
@@ -144,7 +147,32 @@ export default function ProcedurePingApp() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [profile, activeBroadcast]);
+  }, [currentUser, activeBroadcast]);
+
+  async function fetchUsersAndVerify() {
+    const { data: users, error } = await supabase
+      .from('department_users')
+      .select('*')
+      .eq('is_active', true)
+      .order('full_name', { ascending: true });
+
+    if (error || !users) return;
+
+    setActiveUsers(users);
+
+    const savedUserId = localStorage.getItem('procedure_ping_user_id');
+    if (savedUserId) {
+      const match = users.find((u) => u.id === savedUserId);
+      if (match) {
+        setCurrentUser(match);
+        setLocation(HOSPITALS[match.hospital].locations[0]);
+      } else {
+        // User was rotated out or deactivated
+        localStorage.removeItem('procedure_ping_user_id');
+        setCurrentUser(null);
+      }
+    }
+  }
 
   async function fetchActiveProcedures(hospital: HospitalSite) {
     const { data, error } = await supabase
@@ -159,10 +187,43 @@ export default function ProcedurePingApp() {
     }
   }
 
-  // Toggle stage selection for consultant
+  // Handle Passcode Unlock
+  async function handlePasscodeSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setPasscodeError(false);
+
+    const { data, error } = await supabase
+      .from('department_settings')
+      .select('access_code')
+      .eq('id', 'config')
+      .single();
+
+    if (!error && data && data.access_code.trim().toLowerCase() === passcodeInput.trim().toLowerCase()) {
+      localStorage.setItem('procedure_ping_authenticated', 'true');
+      setIsAuthenticated(true);
+      fetchUsersAndVerify();
+    } else {
+      setPasscodeError(true);
+    }
+  }
+
+  // Select User Identity from Roster
+  function handleSelectUser(user: UserRecord) {
+    localStorage.setItem('procedure_ping_user_id', user.id);
+    setCurrentUser(user);
+    setLocation(HOSPITALS[user.hospital].locations[0]);
+  }
+
+  function handleLogout() {
+    if (confirm('Switch user identity?')) {
+      localStorage.removeItem('procedure_ping_user_id');
+      setCurrentUser(null);
+      fetchUsersAndVerify();
+    }
+  }
+
   function toggleStage(stage: TrainingStage) {
     if (targetStages.includes(stage)) {
-      // Prevent deselecting all
       if (targetStages.length > 1) {
         setTargetStages(targetStages.filter((s) => s !== stage));
       }
@@ -171,37 +232,9 @@ export default function ProcedurePingApp() {
     }
   }
 
-  // Save profile setup
-  function handleSaveProfile(e: React.FormEvent) {
-    e.preventDefault();
-    if (!setupName.trim()) return;
-
-    const newProfile: UserProfile = {
-      id: crypto.randomUUID(),
-      name: setupName.trim(),
-      role: setupRole,
-      hospital: setupHospital,
-      stage: setupRole === 'resident' ? setupStage : undefined,
-      gradeDetail: setupRole === 'resident' ? setupGradeDetail : undefined,
-    };
-
-    localStorage.setItem('procedure_ping_profile_v2', JSON.stringify(newProfile));
-    setProfile(newProfile);
-    setLocation(HOSPITALS[newProfile.hospital].locations[0]);
-    setIsSettingUp(false);
-  }
-
-  function handleResetProfile() {
-    if (confirm('Reset your profile, hospital, and role?')) {
-      localStorage.removeItem('procedure_ping_profile_v2');
-      setProfile(null);
-      setIsSettingUp(true);
-    }
-  }
-
   // Consultant: Broadcast Procedure
   async function handleBroadcast() {
-    if (!profile || profile.role !== 'consultant') return;
+    if (!currentUser || currentUser.role !== 'consultant') return;
     setIsBroadcasting(true);
 
     try {
@@ -209,14 +242,14 @@ export default function ProcedurePingApp() {
         .from('procedures')
         .insert([
           {
-            consultant_id: profile.id,
-            consultant_name: profile.name,
+            consultant_id: currentUser.id,
+            consultant_name: currentUser.full_name,
             procedure_name: proc,
             location: location,
             ready_in_minutes: timing,
             target_stages: targetStages,
             status: 'open',
-            hospital_id: profile.hospital,
+            hospital_id: currentUser.hospital,
           },
         ])
         .select()
@@ -239,15 +272,14 @@ export default function ProcedurePingApp() {
 
   // Resident: Claim Procedure
   async function handleClaim(id: string) {
-    if (!profile || profile.role !== 'resident') return;
+    if (!currentUser || currentUser.role !== 'resident') return;
 
-    const stageLabel = TRAINING_STAGES.find((s) => s.id === profile.stage)?.label || '';
-    const displayName = `${profile.name} (${profile.gradeDetail || stageLabel})`;
+    const displayName = `${currentUser.full_name} (${currentUser.grade_detail || currentUser.stage})`;
 
     try {
       const { data, error } = await supabase.rpc('claim_procedure', {
         target_procedure_id: id,
-        claiming_trainee_id: profile.id,
+        claiming_trainee_id: currentUser.id,
         claiming_trainee_name: displayName,
       });
 
@@ -267,162 +299,42 @@ export default function ProcedurePingApp() {
     }
   }
 
-  // Helper for displaying stage badges
-  function formatStageLabel(stageId?: TrainingStage) {
-    const s = TRAINING_STAGES.find((st) => st.id === stageId);
-    return s ? s.label : '';
-  }
-
-  // First-Time Profile Modal
-  if (isSettingUp || !profile) {
+  // SCREEN 1: Department Passcode Gate
+  if (!isAuthenticated) {
     return (
-      <main className="max-w-md mx-auto min-h-screen bg-slate-100 flex flex-col justify-center p-4 font-sans">
-        <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-200">
+      <main className="max-w-md mx-auto min-h-screen bg-slate-900 flex flex-col justify-center p-6 font-sans">
+        <div className="bg-white p-7 rounded-3xl shadow-2xl">
           <div className="flex items-center gap-2 mb-2 text-slate-900">
-            <Stethoscope className="w-6 h-6 text-emerald-600" />
-            <h1 className="text-xl font-black">ProcedurePing Setup</h1>
+            <Lock className="w-6 h-6 text-emerald-600" />
+            <h1 className="text-xl font-black">Department Access</h1>
           </div>
-          <p className="text-xs text-slate-500 mb-5">
-            Configure your trust hospital and training tier.
+          <p className="text-xs text-slate-600 mb-5 leading-relaxed">
+            Enter the HHFT Anaesthetics access passcode to unlock ProcedurePing.
           </p>
 
-          <form onSubmit={handleSaveProfile} className="space-y-4">
+          <form onSubmit={handlePasscodeSubmit} className="space-y-4">
             <div>
-              <label className="text-xs font-bold uppercase text-slate-500">Base Hospital</label>
-              <div className="grid grid-cols-2 gap-2 mt-1.5">
-                {(['BNH', 'RHCH'] as HospitalSite[]).map((h) => (
-                  <button
-                    key={h}
-                    type="button"
-                    onClick={() => setSetupHospital(h)}
-                    className={`py-2.5 px-2 rounded-xl font-bold text-xs border transition text-center ${
-                      setupHospital === h
-                        ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
-                        : 'bg-slate-50 text-slate-700 border-slate-200'
-                    }`}
-                  >
-                    {HOSPITALS[h].label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs font-bold uppercase text-slate-500">Role</label>
-              <div className="grid grid-cols-2 gap-2 mt-1.5">
-                <button
-                  type="button"
-                  onClick={() => setSetupRole('consultant')}
-                  className={`py-3 rounded-xl font-bold text-sm border transition ${
-                    setupRole === 'consultant'
-                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
-                      : 'bg-slate-50 text-slate-700 border-slate-200'
-                  }`}
-                >
-                  Consultant
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSetupRole('resident')}
-                  className={`py-3 rounded-xl font-bold text-sm border transition ${
-                    setupRole === 'resident'
-                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
-                      : 'bg-slate-50 text-slate-700 border-slate-200'
-                  }`}
-                >
-                  Resident / Trainee
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs font-bold uppercase text-slate-500">Full Name</label>
               <input
                 type="text"
                 required
-                placeholder={setupRole === 'consultant' ? 'e.g. Dr. Lipner' : 'e.g. Dr. Alex Taylor'}
-                value={setupName}
-                onChange={(e) => setSetupName(e.target.value)}
-                className="w-full mt-1.5 p-3 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-slate-900 bg-white text-sm"
+                autoFocus
+                placeholder="Enter Access Code (e.g. HHFT2026)"
+                value={passcodeInput}
+                onChange={(e) => setPasscodeInput(e.target.value)}
+                className="w-full p-3.5 rounded-xl border-2 border-slate-200 focus:outline-none focus:border-emerald-600 font-bold text-center text-lg uppercase tracking-wider text-slate-900"
               />
+              {passcodeError && (
+                <p className="text-xs text-red-600 font-bold mt-2 text-center">
+                  Invalid passcode. Please check with your College Tutor or Lead.
+                </p>
+              )}
             </div>
-
-            {setupRole === 'resident' && (
-              <>
-                <div>
-                  <label className="text-xs font-bold uppercase text-slate-500">Training Stage</label>
-                  <div className="grid grid-cols-2 gap-2 mt-1.5">
-                    {TRAINING_STAGES.map((st) => (
-                      <button
-                        key={st.id}
-                        type="button"
-                        onClick={() => {
-                          setSetupStage(st.id);
-                          if (st.id === 'novice') setSetupGradeDetail('Novice');
-                          if (st.id === 'stage_1') setSetupGradeDetail('CT1');
-                          if (st.id === 'stage_2') setSetupGradeDetail('ST4');
-                          if (st.id === 'stage_3') setSetupGradeDetail('ST7');
-                        }}
-                        className={`p-2.5 rounded-xl border text-left transition ${
-                          setupStage === st.id
-                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
-                            : 'bg-slate-50 text-slate-700 border-slate-200'
-                        }`}
-                      >
-                        <div className="font-bold text-xs leading-tight">{st.label}</div>
-                        <div className={`text-[10px] ${setupStage === st.id ? 'text-emerald-100' : 'text-slate-400'}`}>
-                          {st.sub}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-xs font-bold uppercase text-slate-500">Specific Grade</label>
-                  <select
-                    value={setupGradeDetail}
-                    onChange={(e) => setSetupGradeDetail(e.target.value)}
-                    className="w-full mt-1.5 p-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-slate-900 bg-white text-sm"
-                  >
-                    {setupStage === 'novice' && (
-                      <>
-                        <option value="Novice (Pre-IAC)">Novice (Pre-IAC)</option>
-                        <option value="FY2">FY2</option>
-                      </>
-                    )}
-                    {setupStage === 'stage_1' && (
-                      <>
-                        <option value="CT1">CT1</option>
-                        <option value="CT2">CT2</option>
-                        <option value="CT3">CT3</option>
-                        <option value="ACCS">ACCS</option>
-                      </>
-                    )}
-                    {setupStage === 'stage_2' && (
-                      <>
-                        <option value="ST4">ST4</option>
-                        <option value="ST5">ST5</option>
-                      </>
-                    )}
-                    {setupStage === 'stage_3' && (
-                      <>
-                        <option value="ST6">ST6</option>
-                        <option value="ST7">ST7</option>
-                        <option value="ST8">ST8</option>
-                        <option value="Fellow">Post-CCT / Fellow</option>
-                      </>
-                    )}
-                  </select>
-                </div>
-              </>
-            )}
 
             <button
               type="submit"
-              className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-sm rounded-2xl shadow-lg transition mt-4"
+              className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-sm rounded-2xl shadow-lg transition"
             >
-              Save & Enter App
+              Verify & Enter
             </button>
           </form>
         </div>
@@ -430,14 +342,51 @@ export default function ProcedurePingApp() {
     );
   }
 
-  const currentHospitalData = HOSPITALS[profile.hospital];
+  // SCREEN 2: Select Name From Active Roster (Zero typing, instant check)
+  if (!currentUser) {
+    return (
+      <main className="max-w-md mx-auto min-h-screen bg-slate-100 flex flex-col p-5 font-sans justify-center">
+        <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-200">
+          <div className="flex items-center gap-2 mb-1 text-slate-900">
+            <UserCheck className="w-6 h-6 text-emerald-600" />
+            <h1 className="text-xl font-black">Select Your Profile</h1>
+          </div>
+          <p className="text-xs text-slate-500 mb-5">
+            Choose your name from the current rota list. If your name is missing, contact the department administrator.
+          </p>
 
-  // Filter procedures on the resident view according to their stage
+          <div className="max-h-80 overflow-y-auto space-y-2 pr-1">
+            {activeUsers.map((u) => (
+              <button
+                key={u.id}
+                type="button"
+                onClick={() => handleSelectUser(u)}
+                className="w-full p-3 bg-slate-50 hover:bg-emerald-50 hover:border-emerald-400 border border-slate-200 rounded-2xl flex items-center justify-between text-left transition"
+              >
+                <div>
+                  <div className="font-extrabold text-sm text-slate-900">{u.full_name}</div>
+                  <div className="text-[11px] text-slate-500">
+                    {u.hospital} • {u.role === 'consultant' ? 'Consultant' : `${u.grade_detail || u.stage}`}
+                  </div>
+                </div>
+                <span className="text-xs font-bold text-emerald-700 uppercase bg-white px-2 py-1 rounded-lg border border-slate-200">
+                  Select
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  const currentHospitalData = HOSPITALS[currentUser.hospital];
+
   const eligibleProcedures = availableProcedures.filter((p) => {
     if (p.status !== 'open') return false;
-    if (profile.role === 'resident' && profile.stage) {
+    if (currentUser.role === 'resident' && currentUser.stage) {
       if (Array.isArray(p.target_stages) && p.target_stages.length > 0) {
-        return p.target_stages.includes(profile.stage);
+        return p.target_stages.includes(currentUser.stage);
       }
     }
     return true;
@@ -445,15 +394,15 @@ export default function ProcedurePingApp() {
 
   return (
     <main className="max-w-md mx-auto min-h-screen bg-slate-50 flex flex-col justify-between p-4 font-sans pb-10">
-      {/* Header */}
+      {/* Top Header */}
       <header className="flex justify-between items-center bg-slate-900 text-white p-3 rounded-2xl mb-3 shadow-md">
         <div className="flex items-center gap-2">
           <Stethoscope className="w-5 h-5 text-emerald-400 shrink-0" />
           <div>
             <div className="font-extrabold text-sm leading-tight flex items-center gap-1.5 flex-wrap">
-              <span>{profile.name}</span>
+              <span>{currentUser.full_name}</span>
               <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-800 text-emerald-400 font-bold border border-slate-700">
-                {profile.role === 'consultant' ? 'Consultant' : profile.gradeDetail || formatStageLabel(profile.stage)}
+                {currentUser.role === 'consultant' ? 'Consultant' : currentUser.grade_detail || currentUser.stage}
               </span>
             </div>
             <div className="text-[10px] text-slate-400 font-medium flex items-center gap-1 mt-0.5">
@@ -463,8 +412,8 @@ export default function ProcedurePingApp() {
           </div>
         </div>
         <button
-          onClick={handleResetProfile}
-          title="Switch User / Stage"
+          onClick={handleLogout}
+          title="Switch User"
           className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition shrink-0"
         >
           <LogOut className="w-4 h-4" />
@@ -472,7 +421,7 @@ export default function ProcedurePingApp() {
       </header>
 
       {/* ================= CONSULTANT VIEW ================= */}
-      {profile.role === 'consultant' && (
+      {currentUser.role === 'consultant' && (
         <section className="flex-1 flex flex-col gap-3.5">
           {activeBroadcast && activeBroadcast.status === 'open' ? (
             <div className="bg-amber-50 border-2 border-amber-300 rounded-3xl p-6 text-center shadow-md">
@@ -484,15 +433,8 @@ export default function ProcedurePingApp() {
                 {activeBroadcast.procedure_name}
               </p>
               <p className="text-xs text-slate-600 mt-0.5">
-                {activeBroadcast.location} ({profile.hospital})
+                {activeBroadcast.location} ({currentUser.hospital})
               </p>
-              <div className="mt-2 flex justify-center gap-1 flex-wrap">
-                {activeBroadcast.target_stages?.map((st: TrainingStage) => (
-                  <span key={st} className="text-[10px] bg-amber-200/80 text-amber-900 font-bold px-2 py-0.5 rounded-md">
-                    {formatStageLabel(st)}
-                  </span>
-                ))}
-              </div>
               <button
                 type="button"
                 onClick={() => setActiveBroadcast(null)}
@@ -521,7 +463,7 @@ export default function ProcedurePingApp() {
             </div>
           ) : (
             <>
-              {/* 1. Procedures */}
+              {/* Procedures */}
               <div>
                 <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">1. Procedure</label>
                 <div className="grid grid-cols-2 gap-1.5 mt-1 max-h-44 overflow-y-auto p-1 bg-slate-100 rounded-2xl border border-slate-200">
@@ -533,7 +475,7 @@ export default function ProcedurePingApp() {
                       className={`p-2 text-xs font-semibold rounded-xl border text-left transition ${
                         proc === p
                           ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm font-bold'
-                          : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300'
+                          : 'bg-white border-slate-200 text-slate-700'
                       }`}
                     >
                       {p}
@@ -542,14 +484,11 @@ export default function ProcedurePingApp() {
                 </div>
               </div>
 
-              {/* 2. Target Stage Multi-select */}
+              {/* Target Stages */}
               <div>
-                <div className="flex justify-between items-center">
-                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                    2. Target Training Stage(s)
-                  </label>
-                  <span className="text-[10px] text-slate-400">Select 1 or more</span>
-                </div>
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  2. Target Training Stage(s)
+                </label>
                 <div className="grid grid-cols-4 gap-1 mt-1">
                   {TRAINING_STAGES.map((st) => {
                     const isSelected = targetStages.includes(st.id);
@@ -572,14 +511,11 @@ export default function ProcedurePingApp() {
                 </div>
               </div>
 
-              {/* 3. Location */}
+              {/* Location */}
               <div>
-                <div className="flex justify-between items-center">
-                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                    3. Location ({profile.hospital})
-                  </label>
-                  <span className="text-[10px] text-slate-400">{currentHospitalData.locations.length} rooms</span>
-                </div>
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  3. Location ({currentUser.hospital})
+                </label>
                 <div className="grid grid-cols-3 gap-1 mt-1 max-h-28 overflow-y-auto p-1 bg-slate-100 rounded-xl border border-slate-200">
                   {currentHospitalData.locations.map((l) => (
                     <button
@@ -598,7 +534,7 @@ export default function ProcedurePingApp() {
                 </div>
               </div>
 
-              {/* 4. Ready In */}
+              {/* Timing */}
               <div>
                 <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">4. Ready In</label>
                 <div className="grid grid-cols-4 gap-1.5 mt-1">
@@ -633,7 +569,7 @@ export default function ProcedurePingApp() {
       )}
 
       {/* ================= RESIDENT VIEW ================= */}
-      {profile.role === 'resident' && (
+      {currentUser.role === 'resident' && (
         <section className="flex-1 flex flex-col gap-3">
           {claimStatus && (
             <div className="p-3 bg-slate-900 text-white font-semibold text-center text-xs rounded-xl shadow-md">
@@ -644,10 +580,10 @@ export default function ProcedurePingApp() {
           <div className="flex justify-between items-center mb-0.5">
             <div>
               <h2 className="text-xs font-bold uppercase tracking-wider text-slate-600">
-                Available at {profile.hospital}
+                Available at {currentUser.hospital}
               </h2>
               <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md">
-                Targeting: {formatStageLabel(profile.stage)} ({profile.gradeDetail})
+                Stage: {currentUser.grade_detail || currentUser.stage}
               </span>
             </div>
             <span className="text-[10px] text-slate-400 font-medium">Live sync</span>
@@ -658,7 +594,7 @@ export default function ProcedurePingApp() {
               <Clock className="w-8 h-8 text-slate-300 mb-2" />
               <p className="text-sm font-bold text-slate-600">No procedures currently open</p>
               <p className="text-xs text-slate-400 mt-1 max-w-xs">
-                Opportunities broadcast at {profile.hospital} suited for {formatStageLabel(profile.stage)} will appear here instantly.
+                Procedures broadcast at {currentUser.hospital} suited for your stage will appear here instantly.
               </p>
             </div>
           ) : (
@@ -681,7 +617,7 @@ export default function ProcedurePingApp() {
                 </div>
 
                 <div className="flex items-center text-xs font-bold text-slate-600 gap-1.5 bg-slate-50 p-2 rounded-xl">
-                  <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                  <MapPin className="w-4 h-4 text-slate-400" />
                   {item.location} ({item.hospital_id})
                 </div>
 
