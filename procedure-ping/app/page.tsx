@@ -2,9 +2,17 @@
 
 import React, { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Bell, CheckCircle2, Clock, MapPin, Stethoscope, User, LogOut, Building2 } from 'lucide-react';
+import { Bell, CheckCircle2, Clock, MapPin, Stethoscope, User, LogOut, Building2, Check } from 'lucide-react';
 
 type HospitalSite = 'BNH' | 'RHCH';
+type TrainingStage = 'novice' | 'stage_1' | 'stage_2' | 'stage_3';
+
+const TRAINING_STAGES: { id: TrainingStage; label: string; sub: string }[] = [
+  { id: 'novice', label: 'Novice', sub: 'Pre-IAC' },
+  { id: 'stage_1', label: 'Stage 1', sub: 'CT1 - CT3' },
+  { id: 'stage_2', label: 'Stage 2', sub: 'ST4 - ST5' },
+  { id: 'stage_3', label: 'Stage 3', sub: 'ST6 - ST8' },
+];
 
 const HOSPITALS: Record<HospitalSite, { name: string; label: string; locations: string[] }> = {
   BNH: {
@@ -31,7 +39,20 @@ const HOSPITALS: Record<HospitalSite, { name: string; label: string; locations: 
   },
 };
 
-const PROCEDURES = ['ETT', 'Arterial Line', 'CVC', 'Spinal', 'Lumbar Puncture'];
+const PROCEDURES = [
+  'Arterial Line',
+  'Central Line',
+  'Spinal',
+  'Thoracic Epidural',
+  'Lumbar Epidural',
+  'Intubation',
+  'Awake Tracheal Intubation',
+  'Rapid Sequence Induction',
+  'Upper Limb Block',
+  'Lower Limb Block',
+  'Rib Fracture Block',
+];
+
 const TIMINGS = [0, 5, 10, 15];
 
 interface UserProfile {
@@ -39,23 +60,31 @@ interface UserProfile {
   name: string;
   role: 'consultant' | 'resident';
   hospital: HospitalSite;
-  grade?: string;
+  stage?: TrainingStage;
+  gradeDetail?: string; // e.g., "CT2" or "ST5"
 }
 
 export default function ProcedurePingApp() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isSettingUp, setIsSettingUp] = useState(false);
 
-  // Setup Form State
+  // Profile Setup Form State
   const [setupName, setSetupName] = useState('');
   const [setupRole, setSetupRole] = useState<'consultant' | 'resident'>('consultant');
   const [setupHospital, setSetupHospital] = useState<HospitalSite>('BNH');
-  const [setupGrade, setSetupGrade] = useState('CT1');
+  const [setupStage, setSetupStage] = useState<TrainingStage>('stage_1');
+  const [setupGradeDetail, setSetupGradeDetail] = useState('CT1');
 
   // Consultant Broadcast State
   const [proc, setProc] = useState(PROCEDURES[0]);
   const [location, setLocation] = useState(HOSPITALS.BNH.locations[0]);
   const [timing, setTiming] = useState(5);
+  const [targetStages, setTargetStages] = useState<TrainingStage[]>([
+    'novice',
+    'stage_1',
+    'stage_2',
+    'stage_3',
+  ]);
   const [activeBroadcast, setActiveBroadcast] = useState<any>(null);
   const [isBroadcasting, setIsBroadcasting] = useState(false);
 
@@ -65,12 +94,11 @@ export default function ProcedurePingApp() {
 
   // 1. Load user profile on launch
   useEffect(() => {
-    const saved = localStorage.getItem('procedure_ping_profile');
+    const saved = localStorage.getItem('procedure_ping_profile_v2');
     if (saved) {
       try {
         const loaded: UserProfile = JSON.parse(saved);
         setProfile(loaded);
-        // Default location picker to first theatre of user's hospital
         if (HOSPITALS[loaded.hospital]) {
           setLocation(HOSPITALS[loaded.hospital].locations[0]);
         }
@@ -82,7 +110,7 @@ export default function ProcedurePingApp() {
     }
   }, []);
 
-  // 2. Realtime listener scoped to the user's hospital site
+  // 2. Realtime listener scoped to hospital
   useEffect(() => {
     if (!profile) return;
 
@@ -131,6 +159,18 @@ export default function ProcedurePingApp() {
     }
   }
 
+  // Toggle stage selection for consultant
+  function toggleStage(stage: TrainingStage) {
+    if (targetStages.includes(stage)) {
+      // Prevent deselecting all
+      if (targetStages.length > 1) {
+        setTargetStages(targetStages.filter((s) => s !== stage));
+      }
+    } else {
+      setTargetStages([...targetStages, stage]);
+    }
+  }
+
   // Save profile setup
   function handleSaveProfile(e: React.FormEvent) {
     e.preventDefault();
@@ -141,10 +181,11 @@ export default function ProcedurePingApp() {
       name: setupName.trim(),
       role: setupRole,
       hospital: setupHospital,
-      grade: setupRole === 'resident' ? setupGrade : undefined,
+      stage: setupRole === 'resident' ? setupStage : undefined,
+      gradeDetail: setupRole === 'resident' ? setupGradeDetail : undefined,
     };
 
-    localStorage.setItem('procedure_ping_profile', JSON.stringify(newProfile));
+    localStorage.setItem('procedure_ping_profile_v2', JSON.stringify(newProfile));
     setProfile(newProfile);
     setLocation(HOSPITALS[newProfile.hospital].locations[0]);
     setIsSettingUp(false);
@@ -152,7 +193,7 @@ export default function ProcedurePingApp() {
 
   function handleResetProfile() {
     if (confirm('Reset your profile, hospital, and role?')) {
-      localStorage.removeItem('procedure_ping_profile');
+      localStorage.removeItem('procedure_ping_profile_v2');
       setProfile(null);
       setIsSettingUp(true);
     }
@@ -173,6 +214,7 @@ export default function ProcedurePingApp() {
             procedure_name: proc,
             location: location,
             ready_in_minutes: timing,
+            target_stages: targetStages,
             status: 'open',
             hospital_id: profile.hospital,
           },
@@ -199,7 +241,8 @@ export default function ProcedurePingApp() {
   async function handleClaim(id: string) {
     if (!profile || profile.role !== 'resident') return;
 
-    const displayName = profile.grade ? `${profile.name} (${profile.grade})` : profile.name;
+    const stageLabel = TRAINING_STAGES.find((s) => s.id === profile.stage)?.label || '';
+    const displayName = `${profile.name} (${profile.gradeDetail || stageLabel})`;
 
     try {
       const { data, error } = await supabase.rpc('claim_procedure', {
@@ -224,17 +267,23 @@ export default function ProcedurePingApp() {
     }
   }
 
+  // Helper for displaying stage badges
+  function formatStageLabel(stageId?: TrainingStage) {
+    const s = TRAINING_STAGES.find((st) => st.id === stageId);
+    return s ? s.label : '';
+  }
+
   // First-Time Profile Modal
   if (isSettingUp || !profile) {
     return (
-      <main className="max-w-md mx-auto min-h-screen bg-slate-100 flex flex-col justify-center p-5 font-sans">
+      <main className="max-w-md mx-auto min-h-screen bg-slate-100 flex flex-col justify-center p-4 font-sans">
         <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-200">
-          <div className="flex items-center gap-2 mb-3 text-slate-900">
+          <div className="flex items-center gap-2 mb-2 text-slate-900">
             <Stethoscope className="w-6 h-6 text-emerald-600" />
-            <h1 className="text-xl font-black">Welcome to ProcedurePing</h1>
+            <h1 className="text-xl font-black">ProcedurePing Setup</h1>
           </div>
-          <p className="text-xs text-slate-600 mb-5">
-            Select your trust base hospital and role so you only receive alerts for your site.
+          <p className="text-xs text-slate-500 mb-5">
+            Configure your trust hospital and training tier.
           </p>
 
           <form onSubmit={handleSaveProfile} className="space-y-4">
@@ -246,7 +295,7 @@ export default function ProcedurePingApp() {
                     key={h}
                     type="button"
                     onClick={() => setSetupHospital(h)}
-                    className={`py-3 px-2 rounded-xl font-bold text-xs border transition text-center ${
+                    className={`py-2.5 px-2 rounded-xl font-bold text-xs border transition text-center ${
                       setupHospital === h
                         ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
                         : 'bg-slate-50 text-slate-700 border-slate-200'
@@ -287,39 +336,93 @@ export default function ProcedurePingApp() {
             </div>
 
             <div>
-              <label className="text-xs font-bold uppercase text-slate-500">Your Full Title & Name</label>
+              <label className="text-xs font-bold uppercase text-slate-500">Full Name</label>
               <input
                 type="text"
                 required
                 placeholder={setupRole === 'consultant' ? 'e.g. Dr. Lipner' : 'e.g. Dr. Alex Taylor'}
                 value={setupName}
                 onChange={(e) => setSetupName(e.target.value)}
-                className="w-full mt-1.5 p-3 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-slate-900 bg-white"
+                className="w-full mt-1.5 p-3 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-slate-900 bg-white text-sm"
               />
             </div>
 
             {setupRole === 'resident' && (
-              <div>
-                <label className="text-xs font-bold uppercase text-slate-500">Grade / Stage</label>
-                <select
-                  value={setupGrade}
-                  onChange={(e) => setSetupGrade(e.target.value)}
-                  className="w-full mt-1.5 p-3 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-slate-900 bg-white"
-                >
-                  <option value="Novice">Novice</option>
-                  <option value="FY2">FY2</option>
-                  <option value="CT1">CT1</option>
-                  <option value="CT2">CT2</option>
-                  <option value="ST4+">ST4+ (Registrar)</option>
-                </select>
-              </div>
+              <>
+                <div>
+                  <label className="text-xs font-bold uppercase text-slate-500">Training Stage</label>
+                  <div className="grid grid-cols-2 gap-2 mt-1.5">
+                    {TRAINING_STAGES.map((st) => (
+                      <button
+                        key={st.id}
+                        type="button"
+                        onClick={() => {
+                          setSetupStage(st.id);
+                          if (st.id === 'novice') setSetupGradeDetail('Novice');
+                          if (st.id === 'stage_1') setSetupGradeDetail('CT1');
+                          if (st.id === 'stage_2') setSetupGradeDetail('ST4');
+                          if (st.id === 'stage_3') setSetupGradeDetail('ST7');
+                        }}
+                        className={`p-2.5 rounded-xl border text-left transition ${
+                          setupStage === st.id
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                            : 'bg-slate-50 text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        <div className="font-bold text-xs leading-tight">{st.label}</div>
+                        <div className={`text-[10px] ${setupStage === st.id ? 'text-emerald-100' : 'text-slate-400'}`}>
+                          {st.sub}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold uppercase text-slate-500">Specific Grade</label>
+                  <select
+                    value={setupGradeDetail}
+                    onChange={(e) => setSetupGradeDetail(e.target.value)}
+                    className="w-full mt-1.5 p-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-slate-900 bg-white text-sm"
+                  >
+                    {setupStage === 'novice' && (
+                      <>
+                        <option value="Novice (Pre-IAC)">Novice (Pre-IAC)</option>
+                        <option value="FY2">FY2</option>
+                      </>
+                    )}
+                    {setupStage === 'stage_1' && (
+                      <>
+                        <option value="CT1">CT1</option>
+                        <option value="CT2">CT2</option>
+                        <option value="CT3">CT3</option>
+                        <option value="ACCS">ACCS</option>
+                      </>
+                    )}
+                    {setupStage === 'stage_2' && (
+                      <>
+                        <option value="ST4">ST4</option>
+                        <option value="ST5">ST5</option>
+                      </>
+                    )}
+                    {setupStage === 'stage_3' && (
+                      <>
+                        <option value="ST6">ST6</option>
+                        <option value="ST7">ST7</option>
+                        <option value="ST8">ST8</option>
+                        <option value="Fellow">Post-CCT / Fellow</option>
+                      </>
+                    )}
+                  </select>
+                </div>
+              </>
             )}
 
             <button
               type="submit"
-              className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-base rounded-2xl shadow-lg transition mt-4"
+              className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-sm rounded-2xl shadow-lg transition mt-4"
             >
-              Save & Start
+              Save & Enter App
             </button>
           </form>
         </div>
@@ -329,20 +432,31 @@ export default function ProcedurePingApp() {
 
   const currentHospitalData = HOSPITALS[profile.hospital];
 
+  // Filter procedures on the resident view according to their stage
+  const eligibleProcedures = availableProcedures.filter((p) => {
+    if (p.status !== 'open') return false;
+    if (profile.role === 'resident' && profile.stage) {
+      if (Array.isArray(p.target_stages) && p.target_stages.length > 0) {
+        return p.target_stages.includes(profile.stage);
+      }
+    }
+    return true;
+  });
+
   return (
     <main className="max-w-md mx-auto min-h-screen bg-slate-50 flex flex-col justify-between p-4 font-sans pb-10">
-      {/* Top Header */}
-      <header className="flex justify-between items-center bg-slate-900 text-white p-3.5 rounded-2xl mb-4 shadow-md">
+      {/* Header */}
+      <header className="flex justify-between items-center bg-slate-900 text-white p-3 rounded-2xl mb-3 shadow-md">
         <div className="flex items-center gap-2">
-          <Stethoscope className="w-5 h-5 text-emerald-400" />
+          <Stethoscope className="w-5 h-5 text-emerald-400 shrink-0" />
           <div>
-            <div className="font-extrabold text-sm leading-tight flex items-center gap-1.5">
-              {profile.name}
+            <div className="font-extrabold text-sm leading-tight flex items-center gap-1.5 flex-wrap">
+              <span>{profile.name}</span>
               <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-800 text-emerald-400 font-bold border border-slate-700">
-                {profile.role === 'consultant' ? 'Consultant' : profile.grade || 'Resident'}
+                {profile.role === 'consultant' ? 'Consultant' : profile.gradeDetail || formatStageLabel(profile.stage)}
               </span>
             </div>
-            <div className="text-[11px] text-slate-400 font-medium flex items-center gap-1 mt-0.5">
+            <div className="text-[10px] text-slate-400 font-medium flex items-center gap-1 mt-0.5">
               <Building2 className="w-3 h-3 text-slate-500" />
               {currentHospitalData.label}
             </div>
@@ -350,8 +464,8 @@ export default function ProcedurePingApp() {
         </div>
         <button
           onClick={handleResetProfile}
-          title="Switch Hospital / User"
-          className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
+          title="Switch User / Stage"
+          className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition shrink-0"
         >
           <LogOut className="w-4 h-4" />
         </button>
@@ -359,57 +473,67 @@ export default function ProcedurePingApp() {
 
       {/* ================= CONSULTANT VIEW ================= */}
       {profile.role === 'consultant' && (
-        <section className="flex-1 flex flex-col gap-4">
+        <section className="flex-1 flex flex-col gap-3.5">
           {activeBroadcast && activeBroadcast.status === 'open' ? (
             <div className="bg-amber-50 border-2 border-amber-300 rounded-3xl p-6 text-center shadow-md">
-              <div className="animate-pulse flex justify-center mb-3">
-                <Bell className="w-10 h-10 text-amber-600" />
+              <div className="animate-pulse flex justify-center mb-2">
+                <Bell className="w-8 h-8 text-amber-600" />
               </div>
-              <h2 className="text-xl font-black text-amber-950">Procedure Broadcasted</h2>
-              <p className="text-slate-800 font-semibold mt-1">
-                {activeBroadcast.procedure_name} in {activeBroadcast.location} ({profile.hospital})
+              <h2 className="text-lg font-black text-amber-950">Procedure Broadcasted</h2>
+              <p className="text-slate-800 font-bold text-base mt-1">
+                {activeBroadcast.procedure_name}
               </p>
-              <p className="text-xs text-amber-800 mt-2">Waiting for a resident to accept...</p>
+              <p className="text-xs text-slate-600 mt-0.5">
+                {activeBroadcast.location} ({profile.hospital})
+              </p>
+              <div className="mt-2 flex justify-center gap-1 flex-wrap">
+                {activeBroadcast.target_stages?.map((st: TrainingStage) => (
+                  <span key={st} className="text-[10px] bg-amber-200/80 text-amber-900 font-bold px-2 py-0.5 rounded-md">
+                    {formatStageLabel(st)}
+                  </span>
+                ))}
+              </div>
               <button
                 type="button"
                 onClick={() => setActiveBroadcast(null)}
-                className="mt-6 w-full py-3.5 bg-red-100 hover:bg-red-200 text-red-800 font-bold rounded-xl text-sm transition"
+                className="mt-5 w-full py-3 bg-red-100 hover:bg-red-200 text-red-800 font-bold rounded-xl text-xs transition"
               >
                 Cancel / Proceed Solo
               </button>
             </div>
           ) : activeBroadcast && activeBroadcast.status === 'claimed' ? (
             <div className="bg-emerald-50 border-2 border-emerald-400 rounded-3xl p-6 text-center shadow-md">
-              <CheckCircle2 className="w-12 h-12 text-emerald-600 mx-auto mb-2" />
-              <h2 className="text-xl font-black text-emerald-950">Procedure Accepted!</h2>
-              <div className="bg-white border border-emerald-200 rounded-2xl p-4 my-4 shadow-sm">
-                <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Claimed by</div>
-                <div className="text-lg font-extrabold text-slate-900 mt-0.5">
+              <CheckCircle2 className="w-10 h-10 text-emerald-600 mx-auto mb-2" />
+              <h2 className="text-lg font-black text-emerald-950">Procedure Accepted!</h2>
+              <div className="bg-white border border-emerald-200 rounded-2xl p-3.5 my-3 shadow-sm">
+                <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Claimed by</div>
+                <div className="text-base font-extrabold text-slate-900 mt-0.5">
                   {activeBroadcast.claimed_by_name}
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setActiveBroadcast(null)}
-                className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-sm transition"
+                className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs transition"
               >
                 Procedure Complete / Reset
               </button>
             </div>
           ) : (
             <>
+              {/* 1. Procedures */}
               <div>
-                <label className="text-xs font-bold uppercase tracking-wider text-slate-500">1. Procedure</label>
-                <div className="grid grid-cols-2 gap-2 mt-1.5">
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">1. Procedure</label>
+                <div className="grid grid-cols-2 gap-1.5 mt-1 max-h-44 overflow-y-auto p-1 bg-slate-100 rounded-2xl border border-slate-200">
                   {PROCEDURES.map((p) => (
                     <button
                       key={p}
                       type="button"
                       onClick={() => setProc(p)}
-                      className={`p-2.5 text-xs font-semibold rounded-xl border text-left transition ${
+                      className={`p-2 text-xs font-semibold rounded-xl border text-left transition ${
                         proc === p
-                          ? 'border-emerald-600 bg-emerald-50 text-emerald-950 shadow-sm'
-                          : 'bg-white border-slate-200 text-slate-700'
+                          ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm font-bold'
+                          : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300'
                       }`}
                     >
                       {p}
@@ -418,24 +542,54 @@ export default function ProcedurePingApp() {
                 </div>
               </div>
 
+              {/* 2. Target Stage Multi-select */}
               <div>
                 <div className="flex justify-between items-center">
-                  <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                    2. Location ({profile.hospital})
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    2. Target Training Stage(s)
+                  </label>
+                  <span className="text-[10px] text-slate-400">Select 1 or more</span>
+                </div>
+                <div className="grid grid-cols-4 gap-1 mt-1">
+                  {TRAINING_STAGES.map((st) => {
+                    const isSelected = targetStages.includes(st.id);
+                    return (
+                      <button
+                        key={st.id}
+                        type="button"
+                        onClick={() => toggleStage(st.id)}
+                        className={`py-2 px-1 rounded-xl border text-center transition flex flex-col items-center justify-center ${
+                          isSelected
+                            ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                            : 'bg-white text-slate-500 border-slate-200 opacity-60'
+                        }`}
+                      >
+                        <span className="font-extrabold text-[11px]">{st.label}</span>
+                        <span className="text-[9px] opacity-75">{st.sub}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 3. Location */}
+              <div>
+                <div className="flex justify-between items-center">
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    3. Location ({profile.hospital})
                   </label>
                   <span className="text-[10px] text-slate-400">{currentHospitalData.locations.length} rooms</span>
                 </div>
-                {/* Scrollable grid for hospitals with many rooms */}
-                <div className="grid grid-cols-3 gap-1.5 mt-1.5 max-h-48 overflow-y-auto p-1 bg-slate-100 rounded-2xl border border-slate-200">
+                <div className="grid grid-cols-3 gap-1 mt-1 max-h-28 overflow-y-auto p-1 bg-slate-100 rounded-xl border border-slate-200">
                   {currentHospitalData.locations.map((l) => (
                     <button
                       key={l}
                       type="button"
                       onClick={() => setLocation(l)}
-                      className={`p-2 text-[11px] font-semibold rounded-xl border text-center transition truncate ${
+                      className={`p-1.5 text-[11px] font-semibold rounded-lg border text-center transition truncate ${
                         location === l
                           ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm font-bold'
-                          : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300'
+                          : 'bg-white border-slate-200 text-slate-700'
                       }`}
                     >
                       {l}
@@ -444,17 +598,18 @@ export default function ProcedurePingApp() {
                 </div>
               </div>
 
+              {/* 4. Ready In */}
               <div>
-                <label className="text-xs font-bold uppercase tracking-wider text-slate-500">3. Ready In</label>
-                <div className="grid grid-cols-4 gap-2 mt-1.5">
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">4. Ready In</label>
+                <div className="grid grid-cols-4 gap-1.5 mt-1">
                   {TIMINGS.map((t) => (
                     <button
                       key={t}
                       type="button"
                       onClick={() => setTiming(t)}
-                      className={`p-2.5 text-xs font-bold rounded-xl border text-center transition ${
+                      className={`p-2 text-xs font-bold rounded-xl border text-center transition ${
                         timing === t
-                          ? 'border-emerald-600 bg-emerald-50 text-emerald-950'
+                          ? 'border-emerald-600 bg-emerald-50 text-emerald-950 font-black'
                           : 'bg-white border-slate-200 text-slate-700'
                       }`}
                     >
@@ -468,9 +623,9 @@ export default function ProcedurePingApp() {
                 type="button"
                 onClick={handleBroadcast}
                 disabled={isBroadcasting}
-                className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white font-black text-lg rounded-2xl shadow-lg transition active:scale-[0.98] mt-2 cursor-pointer"
+                className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white font-black text-base rounded-2xl shadow-lg transition active:scale-[0.98] mt-auto cursor-pointer"
               >
-                {isBroadcasting ? 'Broadcasting...' : `Broadcast in ${location}`}
+                {isBroadcasting ? 'Broadcasting...' : `Broadcast ${proc}`}
               </button>
             </>
           )}
@@ -481,61 +636,64 @@ export default function ProcedurePingApp() {
       {profile.role === 'resident' && (
         <section className="flex-1 flex flex-col gap-3">
           {claimStatus && (
-            <div className="p-3 bg-slate-900 text-white font-semibold text-center text-sm rounded-xl shadow-md">
+            <div className="p-3 bg-slate-900 text-white font-semibold text-center text-xs rounded-xl shadow-md">
               {claimStatus}
             </div>
           )}
 
-          <div className="flex justify-between items-center mb-1">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Live in {profile.hospital}
-            </h2>
-            <span className="text-[11px] text-slate-400 font-medium">Real-time alerts active</span>
+          <div className="flex justify-between items-center mb-0.5">
+            <div>
+              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-600">
+                Available at {profile.hospital}
+              </h2>
+              <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md">
+                Targeting: {formatStageLabel(profile.stage)} ({profile.gradeDetail})
+              </span>
+            </div>
+            <span className="text-[10px] text-slate-400 font-medium">Live sync</span>
           </div>
 
-          {availableProcedures.filter((p) => p.status === 'open').length === 0 ? (
+          {eligibleProcedures.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center text-center p-8 border-2 border-dashed border-slate-200 rounded-3xl">
-              <Clock className="w-10 h-10 text-slate-300 mb-2" />
-              <p className="text-base font-bold text-slate-600">No active procedures at {profile.hospital}</p>
-              <p className="text-xs text-slate-400 mt-1">
-                When a consultant at {profile.hospital} broadcasts, it will appear here instantly.
+              <Clock className="w-8 h-8 text-slate-300 mb-2" />
+              <p className="text-sm font-bold text-slate-600">No procedures currently open</p>
+              <p className="text-xs text-slate-400 mt-1 max-w-xs">
+                Opportunities broadcast at {profile.hospital} suited for {formatStageLabel(profile.stage)} will appear here instantly.
               </p>
             </div>
           ) : (
-            availableProcedures
-              .filter((p) => p.status === 'open')
-              .map((item) => (
-                <div
-                  key={item.id}
-                  className="bg-white border-2 border-emerald-500/20 hover:border-emerald-500/40 p-4 rounded-3xl shadow-sm flex flex-col gap-3.5 transition"
-                >
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md">
-                        {item.ready_in_minutes === 0 ? 'Ready Now' : `Ready in ${item.ready_in_minutes} mins`}
-                      </span>
-                      <h3 className="font-black text-lg text-slate-900 mt-1.5">{item.procedure_name}</h3>
-                      <div className="text-sm font-bold text-slate-700 mt-0.5 flex items-center gap-1.5">
-                        <User className="w-3.5 h-3.5 text-slate-400" />
-                        with <span className="text-slate-950 underline decoration-slate-300 underline-offset-2">{item.consultant_name}</span>
-                      </div>
+            eligibleProcedures.map((item) => (
+              <div
+                key={item.id}
+                className="bg-white border-2 border-emerald-500/20 hover:border-emerald-500/40 p-4 rounded-3xl shadow-sm flex flex-col gap-3 transition"
+              >
+                <div className="flex justify-between items-start">
+                  <div>
+                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md">
+                      {item.ready_in_minutes === 0 ? 'Ready Now' : `Ready in ${item.ready_in_minutes} mins`}
+                    </span>
+                    <h3 className="font-black text-base text-slate-900 mt-1">{item.procedure_name}</h3>
+                    <div className="text-xs font-bold text-slate-700 mt-0.5 flex items-center gap-1.5">
+                      <User className="w-3.5 h-3.5 text-slate-400" />
+                      with <span className="text-slate-950 underline decoration-slate-300 underline-offset-2">{item.consultant_name}</span>
                     </div>
                   </div>
-
-                  <div className="flex items-center text-xs font-bold text-slate-600 gap-1.5 bg-slate-50 p-2.5 rounded-xl">
-                    <MapPin className="w-4 h-4 text-slate-400" />
-                    {item.location} ({item.hospital_id})
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => handleClaim(item.id)}
-                    className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-sm rounded-2xl transition active:scale-[0.98] cursor-pointer shadow-md"
-                  >
-                    Accept Opportunity
-                  </button>
                 </div>
-              ))
+
+                <div className="flex items-center text-xs font-bold text-slate-600 gap-1.5 bg-slate-50 p-2 rounded-xl">
+                  <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                  {item.location} ({item.hospital_id})
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleClaim(item.id)}
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl transition active:scale-[0.98] cursor-pointer shadow-md"
+                >
+                  Accept Procedure
+                </button>
+              </div>
+            ))
           )}
         </section>
       )}
