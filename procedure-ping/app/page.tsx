@@ -97,7 +97,7 @@ export default function ProcedurePingApp() {
   const [activeBroadcast, setActiveBroadcast] = useState<any>(null);
   const [isBroadcasting, setIsBroadcasting] = useState(false);
 
-  // Resident Feed State
+  // Resident Feed & Persistent Claim State
   const [availableProcedures, setAvailableProcedures] = useState<any[]>([]);
   const [activeClaim, setActiveClaim] = useState<any>(null);
   const [claimSecondsRemaining, setClaimSecondsRemaining] = useState<number>(0);
@@ -149,7 +149,7 @@ export default function ProcedurePingApp() {
     };
   }, [currentUser, activeBroadcast]);
 
-// Live arrival countdown timer for resident
+  // 3. Persistent Arrival Countdown Timer for Resident
   useEffect(() => {
     if (!activeClaim || claimSecondsRemaining <= 0) return;
 
@@ -286,7 +286,7 @@ export default function ProcedurePingApp() {
     }
   }
 
-// Resident: Claim Procedure
+  // Resident: Claim Procedure
   async function handleClaim(procedure: any) {
     if (!currentUser || currentUser.role !== 'resident') return;
 
@@ -307,7 +307,7 @@ export default function ProcedurePingApp() {
       if (data?.success) {
         const durationMinutes = procedure.ready_in_minutes > 0 ? procedure.ready_in_minutes : 5;
         setClaimSecondsRemaining(durationMinutes * 60);
-        setActiveClaim(data.procedure);
+        setActiveClaim(procedure);
       } else {
         alert('Opportunity already claimed by another resident!');
       }
@@ -524,11 +524,7 @@ export default function ProcedurePingApp() {
                         }`}
                       >
                         <span className="font-extrabold text-[11px]">{st.label}</span>
-                        <span
-                          className={`text-[9px] ${
-                            isSelected ? 'text-emerald-100 font-medium' : 'text-slate-400'
-                          }`}
-                        >
+                        <span className={`text-[9px] ${isSelected ? 'text-emerald-100 font-medium' : 'text-slate-400'}`}>
                           {st.sub}
                         </span>
                       </button>
@@ -571,7 +567,7 @@ export default function ProcedurePingApp() {
                       onClick={() => setTiming(t)}
                       className={`p-2 text-xs font-bold rounded-xl border text-center transition ${
                         timing === t
-                          ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm font-bold'
+                          ? 'border-emerald-600 bg-emerald-50 text-emerald-950 font-black'
                           : 'bg-white border-slate-200 text-slate-700'
                       }`}
                     >
@@ -594,10 +590,10 @@ export default function ProcedurePingApp() {
         </section>
       )}
 
-{/* ================= RESIDENT VIEW ================= */}
+      {/* ================= RESIDENT VIEW ================= */}
       {currentUser.role === 'resident' && (
         <section className="flex-1 flex flex-col gap-3">
-          {/* PERSISTENT ACTIVE MISSION CARD */}
+          {/* PERSISTENT COUNTDOWN CARD: STAYS ON SCREEN FOR FULL DURATION */}
           {activeClaim ? (
             <div className="bg-emerald-600 text-white p-6 rounded-3xl shadow-xl flex flex-col items-center text-center animate-in fade-in zoom-in-95 duration-200">
               <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center mb-2">
@@ -608,12 +604,12 @@ export default function ProcedurePingApp() {
                 Opportunity Secured
               </span>
 
-              <h2 className="text-2xl font-black mt-1 leading-tight">
-                Go to {activeClaim.location}
+              <h2 className="text-xl font-black mt-2 leading-snug">
+                Please head to {activeClaim.location} to carry out {activeClaim.procedure_name}
               </h2>
 
-              <p className="text-sm font-semibold text-emerald-100 mt-1">
-                {activeClaim.procedure_name} with {activeClaim.consultant_name}
+              <p className="text-sm font-semibold text-emerald-100 mt-1.5">
+                with {activeClaim.consultant_name}
               </p>
 
               {/* Live Countdown Clock */}
@@ -628,13 +624,13 @@ export default function ProcedurePingApp() {
               </div>
 
               <p className="text-[11px] text-emerald-200 mt-3">
-                This banner will remain on your screen until the scheduled start time.
+                This banner stays locked on your screen until the scheduled start time.
               </p>
 
               <button
                 type="button"
                 onClick={() => setActiveClaim(null)}
-                className="w-full mt-4 py-3 bg-white text-emerald-950 hover:bg-emerald-50 font-black text-xs rounded-xl shadow-md transition active:scale-[0.98]"
+                className="w-full mt-4 py-3.5 bg-white text-emerald-950 hover:bg-emerald-50 font-black text-xs rounded-xl shadow-md transition active:scale-[0.98]"
               >
                 I Have Arrived in Theatre
               </button>
@@ -699,3 +695,6 @@ export default function ProcedurePingApp() {
           )}
         </section>
       )}
+    </main>
+  );
+}
