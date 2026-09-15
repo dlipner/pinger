@@ -103,7 +103,7 @@ export default function ProcedurePingApp() {
   const [expiryTimestamp, setExpiryTimestamp] = useState<number | null>(null);
   const [secondsLeft, setSecondsLeft] = useState<number>(0);
 
-  // 1. Initial Verification of Passcode, Local User, and Active Claim
+  // 1. Initial Verification of Passcode, Local User, and Active Claim from Storage
   useEffect(() => {
     const savedAuth = localStorage.getItem('procedure_ping_authenticated');
     if (savedAuth === 'true') {
@@ -323,46 +323,61 @@ export default function ProcedurePingApp() {
     }
   }
 
+  // Resident: Claim Procedure - Robust direct update without relying on ambiguous RPC returns
   async function handleClaim(procedure: any) {
     if (!currentUser || currentUser.role !== 'resident') return;
 
     const displayName = `${currentUser.full_name} (${currentUser.grade_detail || currentUser.stage})`;
 
     try {
-      const { data, error } = await supabase.rpc('claim_procedure', {
-        target_procedure_id: procedure.id,
-        claiming_trainee_id: currentUser.id,
-        claiming_trainee_name: displayName,
-      });
+      const { data, error } = await supabase
+        .from('procedures')
+        .update({
+          status: 'claimed',
+          claimed_by_id: currentUser.id,
+          claimed_by_name: displayName,
+        })
+        .eq('id', procedure.id)
+        .eq('status', 'open')
+        .select();
 
       if (error) {
-        console.error('Claim error:', error);
+        console.error('Database update error:', error);
+        alert('Could not claim procedure: ' + error.message);
         return;
       }
 
-      if (data?.success) {
-        const durationMins = procedure.ready_in_minutes > 0 ? procedure.ready_in_minutes : 5;
-        const targetExp = Date.now() + durationMins * 60 * 1000;
-
-        const claimObj = {
-          location: procedure.location,
-          procedure_name: procedure.procedure_name,
-          consultant_name: procedure.consultant_name,
-        };
-
-        localStorage.setItem('procedure_ping_active_mission', JSON.stringify(claimObj));
-        localStorage.setItem('procedure_ping_mission_expiry', targetExp.toString());
-
-        setActiveClaim(claimObj);
-        setExpiryTimestamp(targetExp);
-        setSecondsLeft(durationMins * 60);
-
+      // If rows returned is empty, someone else claimed it first
+      if (!data || data.length === 0) {
+        alert('Opportunity was just claimed by another resident!');
         setAvailableProcedures((prev) => prev.filter((p) => p.id !== procedure.id));
-      } else {
-        alert('Opportunity already claimed by another resident!');
+        return;
       }
-    } catch (err) {
-      console.error(err);
+
+      // Success: Calculate expiration and pin mission
+      const durationMins = procedure.ready_in_minutes > 0 ? procedure.ready_in_minutes : 5;
+      const targetExp = Date.now() + durationMins * 60 * 1000;
+
+      const claimObj = {
+        location: procedure.location,
+        procedure_name: procedure.procedure_name,
+        consultant_name: procedure.consultant_name,
+      };
+
+      // 1. Store in localStorage so refreshes or re-renders cannot kill it
+      localStorage.setItem('procedure_ping_active_mission', JSON.stringify(claimObj));
+      localStorage.setItem('procedure_ping_mission_expiry', targetExp.toString());
+
+      // 2. Set React state
+      setActiveClaim(claimObj);
+      setExpiryTimestamp(targetExp);
+      setSecondsLeft(durationMins * 60);
+
+      // 3. Remove from public feed
+      setAvailableProcedures((prev) => prev.filter((p) => p.id !== procedure.id));
+    } catch (err: any) {
+      console.error('Claim exception:', err);
+      alert('Error claiming procedure: ' + err.message);
     }
   }
 
