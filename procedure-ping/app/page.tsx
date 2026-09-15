@@ -102,7 +102,7 @@ export default function ProcedurePingApp() {
   const [activeClaim, setActiveClaim] = useState<any>(null);
   const [claimSecondsRemaining, setClaimSecondsRemaining] = useState<number>(0);
 
-  // 1. Initial Verification of Passcode and Local User ID
+  // 1. Initial Verification of Passcode, Local User, and any saved Active Mission
   useEffect(() => {
     const savedAuth = localStorage.getItem('procedure_ping_authenticated');
     if (savedAuth === 'true') {
@@ -110,6 +110,24 @@ export default function ProcedurePingApp() {
       fetchUsersAndVerify();
     } else {
       setIsAuthenticated(false);
+    }
+
+    // Restore persistent active claim if one was in progress
+    const savedClaim = localStorage.getItem('procedure_ping_active_mission');
+    const savedExpiry = localStorage.getItem('procedure_ping_mission_expiry');
+    if (savedClaim && savedExpiry) {
+      try {
+        const remaining = Math.max(0, Math.floor((parseInt(savedExpiry, 10) - Date.now()) / 1000));
+        if (remaining > 0) {
+          setActiveClaim(JSON.parse(savedClaim));
+          setClaimSecondsRemaining(remaining);
+        } else {
+          localStorage.removeItem('procedure_ping_active_mission');
+          localStorage.removeItem('procedure_ping_mission_expiry');
+        }
+      } catch (e) {
+        console.error('Failed to restore mission', e);
+      }
     }
   }, []);
 
@@ -131,11 +149,20 @@ export default function ProcedurePingApp() {
         },
         (payload) => {
           if (payload.eventType === 'INSERT') {
-            setAvailableProcedures((prev) => [payload.new, ...prev]);
+            if (payload.new.status === 'open') {
+              setAvailableProcedures((prev) => [payload.new, ...prev.filter((p) => p.id !== payload.new.id)]);
+            }
           } else if (payload.eventType === 'UPDATE') {
-            setAvailableProcedures((prev) =>
-              prev.map((item) => (item.id === payload.new.id ? payload.new : item))
-            );
+            if (payload.new.status === 'open') {
+              setAvailableProcedures((prev) =>
+                prev.map((item) => (item.id === payload.new.id ? payload.new : item))
+              );
+            } else {
+              // Remove claimed or closed procedures from the public feed
+              setAvailableProcedures((prev) => prev.filter((item) => item.id !== payload.new.id));
+            }
+
+            // Consultant update tracking
             if (activeBroadcast && activeBroadcast.id === payload.new.id) {
               setActiveBroadcast(payload.new);
             }
@@ -233,7 +260,10 @@ export default function ProcedurePingApp() {
   function handleLogout() {
     if (confirm('Switch user identity?')) {
       localStorage.removeItem('procedure_ping_user_id');
+      localStorage.removeItem('procedure_ping_active_mission');
+      localStorage.removeItem('procedure_ping_mission_expiry');
       setCurrentUser(null);
+      setActiveClaim(null);
       fetchUsersAndVerify();
     }
   }
@@ -286,7 +316,7 @@ export default function ProcedurePingApp() {
     }
   }
 
-  // Resident: Claim Procedure
+  // Resident: Claim Procedure (Persistent across renders & saved to local storage)
   async function handleClaim(procedure: any) {
     if (!currentUser || currentUser.role !== 'resident') return;
 
@@ -306,14 +336,36 @@ export default function ProcedurePingApp() {
 
       if (data?.success) {
         const durationMinutes = procedure.ready_in_minutes > 0 ? procedure.ready_in_minutes : 5;
-        setClaimSecondsRemaining(durationMinutes * 60);
-        setActiveClaim(procedure);
+        const totalSeconds = durationMinutes * 60;
+        const expiryTime = Date.now() + totalSeconds * 1000;
+
+        const claimedObj = {
+          location: procedure.location,
+          procedure_name: procedure.procedure_name,
+          consultant_name: procedure.consultant_name,
+        };
+
+        // Persist to local storage so it NEVER vanishes on re-renders
+        localStorage.setItem('procedure_ping_active_mission', JSON.stringify(claimedObj));
+        localStorage.setItem('procedure_ping_mission_expiry', expiryTime.toString());
+
+        setClaimSecondsRemaining(totalSeconds);
+        setActiveClaim(claimedObj);
+
+        // Remove from local list immediately
+        setAvailableProcedures((prev) => prev.filter((p) => p.id !== procedure.id));
       } else {
         alert('Opportunity already claimed by another resident!');
       }
     } catch (err) {
       console.error(err);
     }
+  }
+
+  function handleDismissMission() {
+    localStorage.removeItem('procedure_ping_active_mission');
+    localStorage.removeItem('procedure_ping_mission_expiry');
+    setActiveClaim(null);
   }
 
   // SCREEN 1: Department Passcode Gate
@@ -501,7 +553,7 @@ export default function ProcedurePingApp() {
                 </div>
               </div>
 
-              {/* 2. Target Stages */}
+              {/* 2. Target Stages (Green when selected, White when unselected) */}
               <div>
                 <div className="flex justify-between items-center">
                   <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
@@ -567,7 +619,7 @@ export default function ProcedurePingApp() {
                       onClick={() => setTiming(t)}
                       className={`p-2 text-xs font-bold rounded-xl border text-center transition ${
                         timing === t
-                          ? 'border-emerald-600 bg-emerald-50 text-emerald-950 font-black'
+                          ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm font-bold'
                           : 'bg-white border-slate-200 text-slate-700'
                       }`}
                     >
@@ -593,9 +645,9 @@ export default function ProcedurePingApp() {
       {/* ================= RESIDENT VIEW ================= */}
       {currentUser.role === 'resident' && (
         <section className="flex-1 flex flex-col gap-3">
-          {/* PERSISTENT COUNTDOWN CARD: STAYS ON SCREEN FOR FULL DURATION */}
+          {/* PERSISTENT COUNTDOWN CARD: LOCKED UNTIL START TIME OR DISMISSED */}
           {activeClaim ? (
-            <div className="bg-emerald-600 text-white p-6 rounded-3xl shadow-xl flex flex-col items-center text-center animate-in fade-in zoom-in-95 duration-200">
+            <div className="bg-emerald-600 text-white p-6 rounded-3xl shadow-xl flex flex-col items-center text-center">
               <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center mb-2">
                 <MapPin className="w-6 h-6 text-white animate-bounce" />
               </div>
@@ -629,7 +681,7 @@ export default function ProcedurePingApp() {
 
               <button
                 type="button"
-                onClick={() => setActiveClaim(null)}
+                onClick={handleDismissMission}
                 className="w-full mt-4 py-3.5 bg-white text-emerald-950 hover:bg-emerald-50 font-black text-xs rounded-xl shadow-md transition active:scale-[0.98]"
               >
                 I Have Arrived in Theatre
