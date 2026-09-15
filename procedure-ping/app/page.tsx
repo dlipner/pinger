@@ -100,9 +100,10 @@ export default function ProcedurePingApp() {
   // Resident Feed & Persistent Claim State
   const [availableProcedures, setAvailableProcedures] = useState<any[]>([]);
   const [activeClaim, setActiveClaim] = useState<any>(null);
-  const [claimSecondsRemaining, setClaimSecondsRemaining] = useState<number>(0);
+  const [expiryTimestamp, setExpiryTimestamp] = useState<number | null>(null);
+  const [secondsLeft, setSecondsLeft] = useState<number>(0);
 
-  // 1. Initial Verification of Passcode, Local User, and any saved Active Mission
+  // 1. Initial Verification of Passcode, Local User, and Active Claim
   useEffect(() => {
     const savedAuth = localStorage.getItem('procedure_ping_authenticated');
     if (savedAuth === 'true') {
@@ -112,26 +113,44 @@ export default function ProcedurePingApp() {
       setIsAuthenticated(false);
     }
 
-    // Restore persistent active claim if one was in progress
     const savedClaim = localStorage.getItem('procedure_ping_active_mission');
     const savedExpiry = localStorage.getItem('procedure_ping_mission_expiry');
     if (savedClaim && savedExpiry) {
       try {
-        const remaining = Math.max(0, Math.floor((parseInt(savedExpiry, 10) - Date.now()) / 1000));
-        if (remaining > 0) {
+        const exp = parseInt(savedExpiry, 10);
+        const diff = Math.ceil((exp - Date.now()) / 1000);
+        if (diff > 0) {
           setActiveClaim(JSON.parse(savedClaim));
-          setClaimSecondsRemaining(remaining);
+          setExpiryTimestamp(exp);
+          setSecondsLeft(diff);
         } else {
           localStorage.removeItem('procedure_ping_active_mission');
           localStorage.removeItem('procedure_ping_mission_expiry');
         }
       } catch (e) {
-        console.error('Failed to restore mission', e);
+        console.error('Error reading saved claim:', e);
       }
     }
   }, []);
 
-  // 2. Realtime listener scoped to hospital
+  // 2. Persistent Ticker based on absolute timestamp
+  useEffect(() => {
+    if (!expiryTimestamp || !activeClaim) return;
+
+    const interval = setInterval(() => {
+      const remaining = Math.ceil((expiryTimestamp - Date.now()) / 1000);
+      if (remaining <= 0) {
+        setSecondsLeft(0);
+        clearInterval(interval);
+      } else {
+        setSecondsLeft(remaining);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [expiryTimestamp, activeClaim]);
+
+  // 3. Realtime listener scoped to hospital
   useEffect(() => {
     if (!currentUser) return;
 
@@ -150,7 +169,10 @@ export default function ProcedurePingApp() {
         (payload) => {
           if (payload.eventType === 'INSERT') {
             if (payload.new.status === 'open') {
-              setAvailableProcedures((prev) => [payload.new, ...prev.filter((p) => p.id !== payload.new.id)]);
+              setAvailableProcedures((prev) => [
+                payload.new,
+                ...prev.filter((p) => p.id !== payload.new.id),
+              ]);
             }
           } else if (payload.eventType === 'UPDATE') {
             if (payload.new.status === 'open') {
@@ -158,11 +180,11 @@ export default function ProcedurePingApp() {
                 prev.map((item) => (item.id === payload.new.id ? payload.new : item))
               );
             } else {
-              // Remove claimed or closed procedures from the public feed
-              setAvailableProcedures((prev) => prev.filter((item) => item.id !== payload.new.id));
+              setAvailableProcedures((prev) =>
+                prev.filter((item) => item.id !== payload.new.id)
+              );
             }
 
-            // Consultant update tracking
             if (activeBroadcast && activeBroadcast.id === payload.new.id) {
               setActiveBroadcast(payload.new);
             }
@@ -175,23 +197,6 @@ export default function ProcedurePingApp() {
       supabase.removeChannel(channel);
     };
   }, [currentUser, activeBroadcast]);
-
-  // 3. Persistent Arrival Countdown Timer for Resident
-  useEffect(() => {
-    if (!activeClaim || claimSecondsRemaining <= 0) return;
-
-    const timer = setInterval(() => {
-      setClaimSecondsRemaining((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [activeClaim, claimSecondsRemaining]);
 
   async function fetchUsersAndVerify() {
     const { data: users, error } = await supabase
@@ -230,7 +235,6 @@ export default function ProcedurePingApp() {
     }
   }
 
-  // Handle Passcode Unlock
   async function handlePasscodeSubmit(e: React.FormEvent) {
     e.preventDefault();
     setPasscodeError(false);
@@ -241,7 +245,11 @@ export default function ProcedurePingApp() {
       .eq('id', 'config')
       .single();
 
-    if (!error && data && data.access_code.trim().toLowerCase() === passcodeInput.trim().toLowerCase()) {
+    if (
+      !error &&
+      data &&
+      data.access_code.trim().toLowerCase() === passcodeInput.trim().toLowerCase()
+    ) {
       localStorage.setItem('procedure_ping_authenticated', 'true');
       setIsAuthenticated(true);
       fetchUsersAndVerify();
@@ -250,7 +258,6 @@ export default function ProcedurePingApp() {
     }
   }
 
-  // Select User Identity from Roster
   function handleSelectUser(user: UserRecord) {
     localStorage.setItem('procedure_ping_user_id', user.id);
     setCurrentUser(user);
@@ -264,6 +271,7 @@ export default function ProcedurePingApp() {
       localStorage.removeItem('procedure_ping_mission_expiry');
       setCurrentUser(null);
       setActiveClaim(null);
+      setExpiryTimestamp(null);
       fetchUsersAndVerify();
     }
   }
@@ -278,7 +286,6 @@ export default function ProcedurePingApp() {
     }
   }
 
-  // Consultant: Broadcast Procedure
   async function handleBroadcast() {
     if (!currentUser || currentUser.role !== 'consultant') return;
     setIsBroadcasting(true);
@@ -316,7 +323,6 @@ export default function ProcedurePingApp() {
     }
   }
 
-  // Resident: Claim Procedure (Persistent across renders & saved to local storage)
   async function handleClaim(procedure: any) {
     if (!currentUser || currentUser.role !== 'resident') return;
 
@@ -335,24 +341,22 @@ export default function ProcedurePingApp() {
       }
 
       if (data?.success) {
-        const durationMinutes = procedure.ready_in_minutes > 0 ? procedure.ready_in_minutes : 5;
-        const totalSeconds = durationMinutes * 60;
-        const expiryTime = Date.now() + totalSeconds * 1000;
+        const durationMins = procedure.ready_in_minutes > 0 ? procedure.ready_in_minutes : 5;
+        const targetExp = Date.now() + durationMins * 60 * 1000;
 
-        const claimedObj = {
+        const claimObj = {
           location: procedure.location,
           procedure_name: procedure.procedure_name,
           consultant_name: procedure.consultant_name,
         };
 
-        // Persist to local storage so it NEVER vanishes on re-renders
-        localStorage.setItem('procedure_ping_active_mission', JSON.stringify(claimedObj));
-        localStorage.setItem('procedure_ping_mission_expiry', expiryTime.toString());
+        localStorage.setItem('procedure_ping_active_mission', JSON.stringify(claimObj));
+        localStorage.setItem('procedure_ping_mission_expiry', targetExp.toString());
 
-        setClaimSecondsRemaining(totalSeconds);
-        setActiveClaim(claimedObj);
+        setActiveClaim(claimObj);
+        setExpiryTimestamp(targetExp);
+        setSecondsLeft(durationMins * 60);
 
-        // Remove from local list immediately
         setAvailableProcedures((prev) => prev.filter((p) => p.id !== procedure.id));
       } else {
         alert('Opportunity already claimed by another resident!');
@@ -366,9 +370,10 @@ export default function ProcedurePingApp() {
     localStorage.removeItem('procedure_ping_active_mission');
     localStorage.removeItem('procedure_ping_mission_expiry');
     setActiveClaim(null);
+    setExpiryTimestamp(null);
+    setSecondsLeft(0);
   }
 
-  // SCREEN 1: Department Passcode Gate
   if (!isAuthenticated) {
     return (
       <main className="max-w-md mx-auto min-h-screen bg-slate-900 flex flex-col justify-center p-6 font-sans">
@@ -411,7 +416,6 @@ export default function ProcedurePingApp() {
     );
   }
 
-  // SCREEN 2: Select Name From Active Roster
   if (!currentUser) {
     return (
       <main className="max-w-md mx-auto min-h-screen bg-slate-100 flex flex-col p-5 font-sans justify-center">
@@ -532,7 +536,6 @@ export default function ProcedurePingApp() {
             </div>
           ) : (
             <>
-              {/* 1. Procedures */}
               <div>
                 <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">1. Procedure</label>
                 <div className="grid grid-cols-2 gap-1.5 mt-1 max-h-44 overflow-y-auto p-1 bg-slate-100 rounded-2xl border border-slate-200">
@@ -553,7 +556,6 @@ export default function ProcedurePingApp() {
                 </div>
               </div>
 
-              {/* 2. Target Stages (Green when selected, White when unselected) */}
               <div>
                 <div className="flex justify-between items-center">
                   <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
@@ -585,7 +587,6 @@ export default function ProcedurePingApp() {
                 </div>
               </div>
 
-              {/* 3. Location */}
               <div>
                 <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                   3. Location ({currentUser.hospital})
@@ -608,7 +609,6 @@ export default function ProcedurePingApp() {
                 </div>
               </div>
 
-              {/* 4. Ready In */}
               <div>
                 <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">4. Ready In</label>
                 <div className="grid grid-cols-4 gap-1.5 mt-1">
@@ -645,7 +645,6 @@ export default function ProcedurePingApp() {
       {/* ================= RESIDENT VIEW ================= */}
       {currentUser.role === 'resident' && (
         <section className="flex-1 flex flex-col gap-3">
-          {/* PERSISTENT COUNTDOWN CARD: LOCKED UNTIL START TIME OR DISMISSED */}
           {activeClaim ? (
             <div className="bg-emerald-600 text-white p-6 rounded-3xl shadow-xl flex flex-col items-center text-center">
               <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center mb-2">
@@ -670,8 +669,8 @@ export default function ProcedurePingApp() {
                   <Clock className="w-4 h-4" /> Ready in:
                 </span>
                 <span className="font-mono text-xl font-black tracking-wider text-white">
-                  {Math.floor(claimSecondsRemaining / 60)}:
-                  {String(claimSecondsRemaining % 60).padStart(2, '0')}
+                  {Math.floor(secondsLeft / 60)}:
+                  {String(secondsLeft % 60).padStart(2, '0')}
                 </span>
               </div>
 
