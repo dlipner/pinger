@@ -76,6 +76,14 @@ interface UserRecord {
   is_active: boolean;
 }
 
+interface ActiveMission {
+  id: string;
+  location: string;
+  procedure_name: string;
+  consultant_name: string;
+  expires_at: number;
+}
+
 export default function ProcedurePingApp() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [passcodeInput, setPasscodeInput] = useState('');
@@ -97,13 +105,12 @@ export default function ProcedurePingApp() {
   const [activeBroadcast, setActiveBroadcast] = useState<any>(null);
   const [isBroadcasting, setIsBroadcasting] = useState(false);
 
-  // Resident Feed & Persistent Claim State
+  // Resident Feed & Active Mission State
   const [availableProcedures, setAvailableProcedures] = useState<any[]>([]);
-  const [activeClaim, setActiveClaim] = useState<any>(null);
-  const [expiryTimestamp, setExpiryTimestamp] = useState<number | null>(null);
-  const [secondsLeft, setSecondsLeft] = useState<number>(0);
+  const [activeMission, setActiveMission] = useState<ActiveMission | null>(null);
+  const [secondsRemaining, setSecondsRemaining] = useState<number>(0);
 
-  // 1. Initial Verification of Passcode, Local User, and Active Claim from Storage
+  // 1. Load authentication, user profile, and active mission on startup
   useEffect(() => {
     const savedAuth = localStorage.getItem('procedure_ping_authenticated');
     if (savedAuth === 'true') {
@@ -113,46 +120,42 @@ export default function ProcedurePingApp() {
       setIsAuthenticated(false);
     }
 
-    const savedClaim = localStorage.getItem('procedure_ping_active_mission');
-    const savedExpiry = localStorage.getItem('procedure_ping_mission_expiry');
-    if (savedClaim && savedExpiry) {
+    const savedMissionStr = localStorage.getItem('procedure_ping_mission_v3');
+    if (savedMissionStr) {
       try {
-        const exp = parseInt(savedExpiry, 10);
-        const diff = Math.ceil((exp - Date.now()) / 1000);
+        const parsed: ActiveMission = JSON.parse(savedMissionStr);
+        const diff = Math.ceil((parsed.expires_at - Date.now()) / 1000);
         if (diff > 0) {
-          setActiveClaim(JSON.parse(savedClaim));
-          setExpiryTimestamp(exp);
-          setSecondsLeft(diff);
+          setActiveMission(parsed);
+          setSecondsRemaining(diff);
         } else {
-          localStorage.removeItem('procedure_ping_active_mission');
-          localStorage.removeItem('procedure_ping_mission_expiry');
+          localStorage.removeItem('procedure_ping_mission_v3');
         }
-      } catch (e) {
-        console.error('Error reading saved claim:', e);
+      } catch (err) {
+        console.error('Failed to parse saved mission', err);
       }
     }
   }, []);
 
-  // 2. Persistent Ticker based on absolute timestamp
+  // 2. Mission Countdown Clock (Only runs while an active mission exists)
   useEffect(() => {
-    if (!expiryTimestamp || !activeClaim) return;
+    if (!activeMission) return;
 
     const interval = setInterval(() => {
-      const remaining = Math.ceil((expiryTimestamp - Date.now()) / 1000);
+      const remaining = Math.ceil((activeMission.expires_at - Date.now()) / 1000);
       if (remaining <= 0) {
-        setSecondsLeft(0);
-        clearInterval(interval);
+        setSecondsRemaining(0);
       } else {
-        setSecondsLeft(remaining);
+        setSecondsRemaining(remaining);
       }
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [expiryTimestamp, activeClaim]);
+  }, [activeMission]);
 
-  // 3. Realtime listener scoped to hospital
+  // 3. Supabase Realtime Listener (Only operates when NOT in an active mission)
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || activeMission) return;
 
     fetchActiveProcedures(currentUser.hospital);
 
@@ -196,7 +199,7 @@ export default function ProcedurePingApp() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [currentUser, activeBroadcast]);
+  }, [currentUser, activeBroadcast, activeMission]);
 
   async function fetchUsersAndVerify() {
     const { data: users, error } = await supabase
@@ -267,11 +270,9 @@ export default function ProcedurePingApp() {
   function handleLogout() {
     if (confirm('Switch user identity?')) {
       localStorage.removeItem('procedure_ping_user_id');
-      localStorage.removeItem('procedure_ping_active_mission');
-      localStorage.removeItem('procedure_ping_mission_expiry');
+      localStorage.removeItem('procedure_ping_mission_v3');
       setCurrentUser(null);
-      setActiveClaim(null);
-      setExpiryTimestamp(null);
+      setActiveMission(null);
       fetchUsersAndVerify();
     }
   }
@@ -323,72 +324,52 @@ export default function ProcedurePingApp() {
     }
   }
 
-  // Resident: Claim Procedure - Robust direct update without relying on ambiguous RPC returns
+  // Resident Claim: Locks UI immediately into mission screen
   async function handleClaim(procedure: any) {
     if (!currentUser || currentUser.role !== 'resident') return;
 
     const displayName = `${currentUser.full_name} (${currentUser.grade_detail || currentUser.stage})`;
+    const durationMins = procedure.ready_in_minutes > 0 ? procedure.ready_in_minutes : 5;
+    const expiresAt = Date.now() + durationMins * 60 * 1000;
 
+    const newMission: ActiveMission = {
+      id: procedure.id,
+      location: procedure.location,
+      procedure_name: procedure.procedure_name,
+      consultant_name: procedure.consultant_name,
+      expires_at: expiresAt,
+    };
+
+    // 1. Lock state immediately
+    localStorage.setItem('procedure_ping_mission_v3', JSON.stringify(newMission));
+    setActiveMission(newMission);
+    setSecondsRemaining(durationMins * 60);
+
+    // 2. Notify Supabase database
     try {
-      const { data, error } = await supabase
+      await supabase
         .from('procedures')
         .update({
           status: 'claimed',
           claimed_by_id: currentUser.id,
           claimed_by_name: displayName,
         })
-        .eq('id', procedure.id)
-        .eq('status', 'open')
-        .select();
-
-      if (error) {
-        console.error('Database update error:', error);
-        alert('Could not claim procedure: ' + error.message);
-        return;
-      }
-
-      // If rows returned is empty, someone else claimed it first
-      if (!data || data.length === 0) {
-        alert('Opportunity was just claimed by another resident!');
-        setAvailableProcedures((prev) => prev.filter((p) => p.id !== procedure.id));
-        return;
-      }
-
-      // Success: Calculate expiration and pin mission
-      const durationMins = procedure.ready_in_minutes > 0 ? procedure.ready_in_minutes : 5;
-      const targetExp = Date.now() + durationMins * 60 * 1000;
-
-      const claimObj = {
-        location: procedure.location,
-        procedure_name: procedure.procedure_name,
-        consultant_name: procedure.consultant_name,
-      };
-
-      // 1. Store in localStorage so refreshes or re-renders cannot kill it
-      localStorage.setItem('procedure_ping_active_mission', JSON.stringify(claimObj));
-      localStorage.setItem('procedure_ping_mission_expiry', targetExp.toString());
-
-      // 2. Set React state
-      setActiveClaim(claimObj);
-      setExpiryTimestamp(targetExp);
-      setSecondsLeft(durationMins * 60);
-
-      // 3. Remove from public feed
-      setAvailableProcedures((prev) => prev.filter((p) => p.id !== procedure.id));
-    } catch (err: any) {
-      console.error('Claim exception:', err);
-      alert('Error claiming procedure: ' + err.message);
+        .eq('id', procedure.id);
+    } catch (err) {
+      console.error('Error claiming in background:', err);
     }
   }
 
-  function handleDismissMission() {
-    localStorage.removeItem('procedure_ping_active_mission');
-    localStorage.removeItem('procedure_ping_mission_expiry');
-    setActiveClaim(null);
-    setExpiryTimestamp(null);
-    setSecondsLeft(0);
+  function handleArrived() {
+    localStorage.removeItem('procedure_ping_mission_v3');
+    setActiveMission(null);
+    setSecondsRemaining(0);
+    if (currentUser) {
+      fetchActiveProcedures(currentUser.hospital);
+    }
   }
 
+  // SCREEN 1: Passcode Gate
   if (!isAuthenticated) {
     return (
       <main className="max-w-md mx-auto min-h-screen bg-slate-900 flex flex-col justify-center p-6 font-sans">
@@ -431,6 +412,7 @@ export default function ProcedurePingApp() {
     );
   }
 
+  // SCREEN 2: User Selection
   if (!currentUser) {
     return (
       <main className="max-w-md mx-auto min-h-screen bg-slate-100 flex flex-col p-5 font-sans justify-center">
@@ -468,6 +450,61 @@ export default function ProcedurePingApp() {
     );
   }
 
+  // SCREEN 3: ACTIVE MISSION SCREEN (Locked exclusively on resident screen when procedure is claimed)
+  if (currentUser.role === 'resident' && activeMission) {
+    return (
+      <main className="max-w-md mx-auto min-h-screen bg-slate-900 flex flex-col justify-between p-5 font-sans">
+        <div className="flex items-center justify-between text-slate-400 text-xs py-2 border-b border-slate-800">
+          <span className="font-bold flex items-center gap-1.5 text-white">
+            <Stethoscope className="w-4 h-4 text-emerald-400" /> ProcedurePing Active Mission
+          </span>
+          <span>{currentUser.full_name}</span>
+        </div>
+
+        <div className="bg-emerald-600 text-white p-7 rounded-3xl shadow-2xl flex flex-col items-center text-center my-auto">
+          <div className="w-14 h-14 rounded-full bg-white/20 flex items-center justify-center mb-3">
+            <MapPin className="w-7 h-7 text-white animate-bounce" />
+          </div>
+
+          <span className="text-[11px] font-black uppercase tracking-widest text-emerald-200">
+            Opportunity Claimed & Secured
+          </span>
+
+          <h1 className="text-2xl font-black mt-3 leading-snug">
+            Please head to {activeMission.location} to carry out {activeMission.procedure_name}
+          </h1>
+
+          <p className="text-base font-semibold text-emerald-100 mt-2">
+            with {activeMission.consultant_name}
+          </p>
+
+          {/* Countdown timer */}
+          <div className="bg-slate-950/40 border border-white/20 rounded-2xl px-6 py-4 mt-6 w-full flex items-center justify-between">
+            <span className="text-xs font-bold text-emerald-100 flex items-center gap-2">
+              <Clock className="w-4 h-4" /> Ready in:
+            </span>
+            <span className="font-mono text-2xl font-black tracking-widest text-white">
+              {Math.floor(secondsRemaining / 60)}:
+              {String(secondsRemaining % 60).padStart(2, '0')}
+            </span>
+          </div>
+
+          <p className="text-[11px] text-emerald-200 mt-4 leading-relaxed">
+            This screen stays locked on your phone until you tap below upon arrival in theatre.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleArrived}
+          className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm rounded-2xl shadow-xl transition active:scale-[0.98] cursor-pointer"
+        >
+          I Have Arrived in Theatre
+        </button>
+      </main>
+    );
+  }
+
   const currentHospitalData = HOSPITALS[currentUser.hospital];
 
   const eligibleProcedures = availableProcedures.filter((p) => {
@@ -482,7 +519,7 @@ export default function ProcedurePingApp() {
 
   return (
     <main className="max-w-md mx-auto min-h-screen bg-slate-50 flex flex-col justify-between p-4 font-sans pb-10">
-      {/* Top Header */}
+      {/* Header */}
       <header className="flex justify-between items-center bg-slate-900 text-white p-3 rounded-2xl mb-3 shadow-md">
         <div className="flex items-center gap-2">
           <Stethoscope className="w-5 h-5 text-emerald-400 shrink-0" />
@@ -634,7 +671,7 @@ export default function ProcedurePingApp() {
                       onClick={() => setTiming(t)}
                       className={`p-2 text-xs font-bold rounded-xl border text-center transition ${
                         timing === t
-                          ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm font-bold'
+                          ? 'border-emerald-600 bg-emerald-50 text-emerald-950 font-black'
                           : 'bg-white border-slate-200 text-slate-700'
                       }`}
                     >
@@ -657,107 +694,62 @@ export default function ProcedurePingApp() {
         </section>
       )}
 
-      {/* ================= RESIDENT VIEW ================= */}
+      {/* ================= RESIDENT VIEW (FEED) ================= */}
       {currentUser.role === 'resident' && (
         <section className="flex-1 flex flex-col gap-3">
-          {activeClaim ? (
-            <div className="bg-emerald-600 text-white p-6 rounded-3xl shadow-xl flex flex-col items-center text-center">
-              <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center mb-2">
-                <MapPin className="w-6 h-6 text-white animate-bounce" />
-              </div>
-
-              <span className="text-[11px] font-black uppercase tracking-widest text-emerald-200">
-                Opportunity Secured
-              </span>
-
-              <h2 className="text-xl font-black mt-2 leading-snug">
-                Please head to {activeClaim.location} to carry out {activeClaim.procedure_name}
+          <div className="flex justify-between items-center mb-0.5">
+            <div>
+              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-600">
+                Available at {currentUser.hospital}
               </h2>
+              <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md">
+                Stage: {currentUser.grade_detail || currentUser.stage}
+              </span>
+            </div>
+            <span className="text-[10px] text-slate-400 font-medium">Live sync</span>
+          </div>
 
-              <p className="text-sm font-semibold text-emerald-100 mt-1.5">
-                with {activeClaim.consultant_name}
+          {eligibleProcedures.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-center p-8 border-2 border-dashed border-slate-200 rounded-3xl">
+              <Clock className="w-8 h-8 text-slate-300 mb-2" />
+              <p className="text-sm font-bold text-slate-600">No procedures currently open</p>
+              <p className="text-xs text-slate-400 mt-1 max-w-xs">
+                Procedures broadcast at {currentUser.hospital} suited for your stage will appear here instantly.
               </p>
-
-              {/* Live Countdown Clock */}
-              <div className="bg-slate-900/40 border border-white/20 rounded-2xl px-5 py-3 mt-4 w-full flex items-center justify-between">
-                <span className="text-xs font-bold text-emerald-100 flex items-center gap-1.5">
-                  <Clock className="w-4 h-4" /> Ready in:
-                </span>
-                <span className="font-mono text-xl font-black tracking-wider text-white">
-                  {Math.floor(secondsLeft / 60)}:
-                  {String(secondsLeft % 60).padStart(2, '0')}
-                </span>
-              </div>
-
-              <p className="text-[11px] text-emerald-200 mt-3">
-                This banner stays locked on your screen until the scheduled start time.
-              </p>
-
-              <button
-                type="button"
-                onClick={handleDismissMission}
-                className="w-full mt-4 py-3.5 bg-white text-emerald-950 hover:bg-emerald-50 font-black text-xs rounded-xl shadow-md transition active:scale-[0.98]"
-              >
-                I Have Arrived in Theatre
-              </button>
             </div>
           ) : (
-            <>
-              <div className="flex justify-between items-center mb-0.5">
-                <div>
-                  <h2 className="text-xs font-bold uppercase tracking-wider text-slate-600">
-                    Available at {currentUser.hospital}
-                  </h2>
-                  <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md">
-                    Stage: {currentUser.grade_detail || currentUser.stage}
-                  </span>
-                </div>
-                <span className="text-[10px] text-slate-400 font-medium">Live sync</span>
-              </div>
-
-              {eligibleProcedures.length === 0 ? (
-                <div className="flex-1 flex flex-col items-center justify-center text-center p-8 border-2 border-dashed border-slate-200 rounded-3xl">
-                  <Clock className="w-8 h-8 text-slate-300 mb-2" />
-                  <p className="text-sm font-bold text-slate-600">No procedures currently open</p>
-                  <p className="text-xs text-slate-400 mt-1 max-w-xs">
-                    Procedures broadcast at {currentUser.hospital} suited for your stage will appear here instantly.
-                  </p>
-                </div>
-              ) : (
-                eligibleProcedures.map((item) => (
-                  <div
-                    key={item.id}
-                    className="bg-white border-2 border-emerald-500/20 hover:border-emerald-500/40 p-4 rounded-3xl shadow-sm flex flex-col gap-3 transition"
-                  >
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md">
-                          {item.ready_in_minutes === 0 ? 'Ready Now' : `Ready in ${item.ready_in_minutes} mins`}
-                        </span>
-                        <h3 className="font-black text-base text-slate-900 mt-1">{item.procedure_name}</h3>
-                        <div className="text-xs font-bold text-slate-700 mt-0.5 flex items-center gap-1.5">
-                          <User className="w-3.5 h-3.5 text-slate-400" />
-                          with <span className="text-slate-950 underline decoration-slate-300 underline-offset-2">{item.consultant_name}</span>
-                        </div>
-                      </div>
+            eligibleProcedures.map((item) => (
+              <div
+                key={item.id}
+                className="bg-white border-2 border-emerald-500/20 hover:border-emerald-500/40 p-4 rounded-3xl shadow-sm flex flex-col gap-3 transition"
+              >
+                <div className="flex justify-between items-start">
+                  <div>
+                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md">
+                      {item.ready_in_minutes === 0 ? 'Ready Now' : `Ready in ${item.ready_in_minutes} mins`}
+                    </span>
+                    <h3 className="font-black text-base text-slate-900 mt-1">{item.procedure_name}</h3>
+                    <div className="text-xs font-bold text-slate-700 mt-0.5 flex items-center gap-1.5">
+                      <User className="w-3.5 h-3.5 text-slate-400" />
+                      with <span className="text-slate-950 underline decoration-slate-300 underline-offset-2">{item.consultant_name}</span>
                     </div>
-
-                    <div className="flex items-center text-xs font-bold text-slate-600 gap-1.5 bg-slate-50 p-2 rounded-xl">
-                      <MapPin className="w-4 h-4 text-slate-400" />
-                      {item.location} ({item.hospital_id})
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => handleClaim(item)}
-                      className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl transition active:scale-[0.98] cursor-pointer shadow-md"
-                    >
-                      Accept Procedure
-                    </button>
                   </div>
-                ))
-              )}
-            </>
+                </div>
+
+                <div className="flex items-center text-xs font-bold text-slate-600 gap-1.5 bg-slate-50 p-2 rounded-xl">
+                  <MapPin className="w-4 h-4 text-slate-400" />
+                  {item.location} ({item.hospital_id})
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleClaim(item)}
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl transition active:scale-[0.98] cursor-pointer shadow-md"
+                >
+                  Accept Procedure
+                </button>
+              </div>
+            ))
           )}
         </section>
       )}
