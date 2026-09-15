@@ -482,7 +482,7 @@ export default function ProcedurePingApp() {
                 </div>
               </div>
 
-              {/* 2. Target Stages (Updated: Green when selected, White when unselected) */}
+              {/* 2. Target Stages */}
               <div>
                 <div className="flex justify-between items-center">
                   <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
@@ -500,12 +500,16 @@ export default function ProcedurePingApp() {
                         onClick={() => toggleStage(st.id)}
                         className={`py-2 px-1 rounded-xl border text-center transition flex flex-col items-center justify-center ${
                           isSelected
-                            ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm font-bold'
-                            : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300'
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm font-bold'
+                            : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
                         }`}
                       >
                         <span className="font-extrabold text-[11px]">{st.label}</span>
-                        <span className={`text-[9px] ${isSelected ? 'text-emerald-100 font-medium' : 'text-slate-400'}`}>
+                        <span
+                          className={`text-[9px] ${
+                            isSelected ? 'text-emerald-100 font-medium' : 'text-slate-400'
+                          }`}
+                        >
                           {st.sub}
                         </span>
                       </button>
