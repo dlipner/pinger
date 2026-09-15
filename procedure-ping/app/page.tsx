@@ -11,7 +11,7 @@ const TIMINGS = [0, 5, 10, 15];
 export default function ProcedurePingApp() {
   const [role, setRole] = useState<'consultant' | 'trainee'>('consultant');
 
-  // Hardcoded mock user IDs for local testing
+  // Hardcoded test identities
   const consultantUser = { id: 'a1111111-1111-1111-1111-111111111111', name: 'Dr. Smith' };
   const traineeUser = { id: 'b2222222-2222-2222-2222-222222222222', name: 'Dr. Taylor (CT1)' };
 
@@ -20,6 +20,7 @@ export default function ProcedurePingApp() {
   const [location, setLocation] = useState(LOCATIONS[0]);
   const [timing, setTiming] = useState(5);
   const [activeBroadcast, setActiveBroadcast] = useState<any>(null);
+  const [isBroadcasting, setIsBroadcasting] = useState(false);
 
   // Trainee state
   const [availableProcedures, setAvailableProcedures] = useState<any[]>([]);
@@ -35,7 +36,6 @@ export default function ProcedurePingApp() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'procedures' },
         (payload) => {
-          console.log('Realtime change received:', payload);
           if (payload.eventType === 'INSERT') {
             setAvailableProcedures((prev) => [payload.new, ...prev]);
           } else if (payload.eventType === 'UPDATE') {
@@ -62,18 +62,14 @@ export default function ProcedurePingApp() {
       .eq('status', 'open')
       .order('created_at', { ascending: false });
 
-    if (error) {
-      console.error('Error fetching initial procedures:', error);
-    }
-    if (data) {
+    if (!error && data) {
       setAvailableProcedures(data);
     }
   }
 
-  // Consultant: Broadcast Procedure with direct alert feedback
+  // Consultant: Clean broadcast without browser alerts
   async function handleBroadcast() {
-    alert('Button tapped! Checking Supabase connection...');
-
+    setIsBroadcasting(true);
     try {
       const { data, error } = await supabase
         .from('procedures')
@@ -92,17 +88,17 @@ export default function ProcedurePingApp() {
         .single();
 
       if (error) {
-        alert('Supabase Error: ' + error.message);
-        console.error('Supabase insert error details:', error);
+        console.error('Broadcast error:', error);
         return;
       }
 
-      alert('Success! Broadcast added to database.');
-      console.log('Row saved:', data);
-      setActiveBroadcast(data);
-    } catch (err: any) {
-      alert('Local app error: ' + err.message);
-      console.error('Crash in handleBroadcast:', err);
+      if (data) {
+        setActiveBroadcast(data);
+      }
+    } catch (err) {
+      console.error('Broadcast catch error:', err);
+    } finally {
+      setIsBroadcasting(false);
     }
   }
 
@@ -116,18 +112,18 @@ export default function ProcedurePingApp() {
       });
 
       if (error) {
-        alert('Error claiming: ' + error.message);
+        console.error('Claim error:', error);
         return;
       }
 
       if (data?.success) {
-        setClaimStatus('Claimed! Head to ' + data.procedure.location);
+        setClaimStatus(`Claimed! Head to ${data.procedure.location}`);
       } else {
         setClaimStatus('Opportunity missed! Someone claimed it first.');
       }
       setTimeout(() => setClaimStatus(null), 4000);
-    } catch (err: any) {
-      alert('Local error claiming: ' + err.message);
+    } catch (err) {
+      console.error('Claim catch error:', err);
     }
   }
 
@@ -175,7 +171,7 @@ export default function ProcedurePingApp() {
               <button
                 type="button"
                 onClick={() => setActiveBroadcast(null)}
-                className="mt-6 w-full py-3 bg-red-100 hover:bg-red-200 text-red-700 font-bold rounded-xl text-sm"
+                className="mt-6 w-full py-3 bg-red-100 hover:bg-red-200 text-red-700 font-bold rounded-xl text-sm transition"
               >
                 Cancel / Proceed Solo
               </button>
@@ -190,7 +186,7 @@ export default function ProcedurePingApp() {
               <button
                 type="button"
                 onClick={() => setActiveBroadcast(null)}
-                className="mt-6 w-full py-3 bg-slate-900 text-white font-bold rounded-xl text-sm"
+                className="mt-6 w-full py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-sm transition"
               >
                 Mark Complete / Reset
               </button>
@@ -260,9 +256,10 @@ export default function ProcedurePingApp() {
               <button
                 type="button"
                 onClick={handleBroadcast}
-                className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-lg rounded-2xl shadow-md transition active:scale-[0.98] mt-auto cursor-pointer"
+                disabled={isBroadcasting}
+                className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white font-extrabold text-lg rounded-2xl shadow-md transition active:scale-[0.98] mt-auto cursor-pointer"
               >
-                Broadcast Opportunity
+                {isBroadcasting ? 'Broadcasting...' : 'Broadcast Opportunity'}
               </button>
             </>
           )}
@@ -273,7 +270,7 @@ export default function ProcedurePingApp() {
       {role === 'trainee' && (
         <section className="flex-1 flex flex-col gap-3">
           {claimStatus && (
-            <div className="p-3 bg-slate-900 text-white font-semibold text-center text-sm rounded-xl">
+            <div className="p-3 bg-slate-900 text-white font-semibold text-center text-sm rounded-xl animate-fade-in shadow-md">
               {claimStatus}
             </div>
           )}
@@ -309,7 +306,7 @@ export default function ProcedurePingApp() {
                   <button
                     type="button"
                     onClick={() => handleClaim(item.id)}
-                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-xl transition active:scale-[0.98] cursor-pointer"
+                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-xl transition active:scale-[0.98] cursor-pointer shadow-sm"
                   >
                     Accept Opportunity
                   </button>
