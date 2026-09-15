@@ -89,20 +89,16 @@ export default function ProcedurePingApp() {
   const [passcodeInput, setPasscodeInput] = useState('');
   const [passcodeError, setPasscodeError] = useState(false);
 
-  // User Profile
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [activeMission, setActiveMission] = useState<MissionData | null>(null);
 
-  // Registration Form State
+  // Form State
   const [regName, setRegName] = useState('');
   const [regRole, setRegRole] = useState<Role>('consultant');
   const [regHospital, setRegHospital] = useState<HospitalSite>('BNH');
   const [regStage, setRegStage] = useState<TrainingStage>('novice');
   const [regGrade, setRegGrade] = useState('');
 
-  // Resident Active Mission
-  const [activeMission, setActiveMission] = useState<MissionData | null>(null);
-
-  // Check Local Auth and Saved Profile on Mount
   useEffect(() => {
     const savedAuth = localStorage.getItem('procedure_ping_authenticated');
     if (savedAuth === 'true') {
@@ -161,8 +157,14 @@ export default function ProcedurePingApp() {
     e.preventDefault();
     if (!regName.trim()) return;
 
+    // Generate a valid UUID so Postgres UUID columns accept it
+    const generatedId =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : '00000000-0000-4000-8000-' + Date.now().toString(16).padStart(12, '0');
+
     const profile: UserProfile = {
-      id: `user_${Date.now()}`,
+      id: generatedId,
       name: regName.trim(),
       role: regRole,
       hospital: regHospital,
@@ -183,7 +185,7 @@ export default function ProcedurePingApp() {
     }
   }
 
-  // SCREEN 1: Department Passcode
+  // SCREEN 1: Passcode Gate
   if (!isAuthenticated) {
     return (
       <main className="max-w-md mx-auto min-h-screen bg-slate-900 flex flex-col justify-center p-6 font-sans">
@@ -226,7 +228,7 @@ export default function ProcedurePingApp() {
     );
   }
 
-  // SCREEN 2: Self Registration Screen
+  // SCREEN 2: Self Registration
   if (!currentUser) {
     return (
       <main className="max-w-md mx-auto min-h-screen bg-slate-100 flex flex-col p-5 font-sans justify-center">
@@ -240,7 +242,6 @@ export default function ProcedurePingApp() {
           </p>
 
           <form onSubmit={handleRegisterSubmit} className="space-y-4">
-            {/* Full Name */}
             <div>
               <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                 Full Name
@@ -255,7 +256,6 @@ export default function ProcedurePingApp() {
               />
             </div>
 
-            {/* Role: Consultant or Resident */}
             <div>
               <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                 Role
@@ -286,7 +286,6 @@ export default function ProcedurePingApp() {
               </div>
             </div>
 
-            {/* Hospital Site */}
             <div>
               <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                 Primary Hospital Site
@@ -317,7 +316,6 @@ export default function ProcedurePingApp() {
               </div>
             </div>
 
-            {/* Resident Stage & Grade */}
             {regRole === 'resident' && (
               <div className="space-y-3 pt-1 border-t border-slate-100">
                 <div>
@@ -366,7 +364,7 @@ export default function ProcedurePingApp() {
 
             <button
               type="submit"
-              className="w-full mt-2 py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-sm rounded-xl shadow-lg transition"
+              className="w-full mt-2 py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-sm rounded-xl shadow-lg transition cursor-pointer"
             >
               Save Profile & Start
             </button>
@@ -376,7 +374,7 @@ export default function ProcedurePingApp() {
     );
   }
 
-  // SCREEN 3: Active Procedure Mission (Locked exclusively for Resident)
+  // SCREEN 3: Active Mission Screen for Resident
   if (currentUser.role === 'resident' && activeMission) {
     return (
       <ResidentMissionView
@@ -390,7 +388,7 @@ export default function ProcedurePingApp() {
     );
   }
 
-  // SCREEN 4: Main Application View
+  // SCREEN 4: Main Application
   return (
     <main className="max-w-md mx-auto min-h-screen bg-slate-50 flex flex-col justify-between p-4 font-sans pb-10">
       <header className="flex justify-between items-center bg-slate-900 text-white p-3 rounded-2xl mb-3 shadow-md">
@@ -515,7 +513,7 @@ function ResidentMissionView({
 }
 
 /* ==========================================================================
-   RESIDENT FEED VIEW
+   RESIDENT FEED VIEW (WITH FAILSAFE AUTO-POLLING)
    ========================================================================== */
 function ResidentFeed({
   currentUser,
@@ -526,52 +524,59 @@ function ResidentFeed({
 }) {
   const [procedures, setProcedures] = useState<any[]>([]);
 
-  useEffect(() => {
-    fetchOpen();
-
-    const channel = supabase
-      .channel(`resident-feed:${currentUser.hospital}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'procedures',
-          filter: `hospital_id=eq.${currentUser.hospital}`,
-        },
-        (payload) => {
-          if (payload.eventType === 'INSERT') {
-            if (payload.new.status === 'open') {
-              setProcedures((prev) => [payload.new, ...prev.filter((p) => p.id !== payload.new.id)]);
-            }
-          } else if (payload.eventType === 'UPDATE') {
-            if (payload.new.status === 'open') {
-              setProcedures((prev) =>
-                prev.map((p) => (p.id === payload.new.id ? payload.new : p))
-              );
-            } else {
-              setProcedures((prev) => prev.filter((p) => p.id !== payload.new.id));
-            }
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [currentUser.hospital]);
-
   async function fetchOpen() {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('procedures')
       .select('*')
       .eq('hospital_id', currentUser.hospital)
       .eq('status', 'open')
       .order('created_at', { ascending: false });
 
-    if (data) setProcedures(data);
+    if (!error && data) {
+      setProcedures(data);
+    }
   }
+
+  useEffect(() => {
+    fetchOpen();
+
+    // 1. Supabase Realtime Listener (Without channel filters that drop events)
+    const channel = supabase
+      .channel('resident-feed-global')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'procedures',
+        },
+        (payload) => {
+          const row: any = payload.new;
+          if (!row || row.hospital_id !== currentUser.hospital) return;
+
+          if (payload.eventType === 'INSERT') {
+            if (row.status === 'open') {
+              setProcedures((prev) => [row, ...prev.filter((p) => p.id !== row.id)]);
+            }
+          } else if (payload.eventType === 'UPDATE') {
+            if (row.status === 'open') {
+              setProcedures((prev) => prev.map((p) => (p.id === row.id ? row : p)));
+            } else {
+              setProcedures((prev) => prev.filter((p) => p.id !== row.id));
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    // 2. Failsafe Polling: Refreshes every 4s in case of hospital network drops
+    const pollTimer = setInterval(fetchOpen, 4000);
+
+    return () => {
+      supabase.removeChannel(channel);
+      clearInterval(pollTimer);
+    };
+  }, [currentUser.hospital]);
 
   async function handleClaim(p: any) {
     const displayName = `${currentUser.name} (${currentUser.grade_detail || currentUser.stage})`;
@@ -589,7 +594,7 @@ function ResidentFeed({
     onClaimSuccess(mission);
 
     try {
-      await supabase
+      const { error } = await supabase
         .from('procedures')
         .update({
           status: 'claimed',
@@ -597,6 +602,10 @@ function ResidentFeed({
           claimed_by_name: displayName,
         })
         .eq('id', p.id);
+
+      if (error) {
+        console.error('Claim database update error:', error);
+      }
     } catch (err) {
       console.error('Database update error:', err);
     }
@@ -621,7 +630,10 @@ function ResidentFeed({
             Stage: {currentUser.grade_detail || currentUser.stage}
           </span>
         </div>
-        <span className="text-[10px] text-slate-400 font-medium">Live sync</span>
+        <span className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+          Live sync
+        </span>
       </div>
 
       {eligible.length === 0 ? (
@@ -688,14 +700,13 @@ function ConsultantPanel({ currentUser }: { currentUser: UserProfile }) {
 
   useEffect(() => {
     const channel = supabase
-      .channel(`consultant-tracking:${currentUser.id}`)
+      .channel('consultant-global-listener')
       .on(
         'postgres_changes',
         {
           event: 'UPDATE',
           schema: 'public',
           table: 'procedures',
-          filter: `consultant_id=eq.${currentUser.id}`,
         },
         (payload) => {
           if (activeBroadcast && payload.new.id === activeBroadcast.id) {
@@ -708,7 +719,7 @@ function ConsultantPanel({ currentUser }: { currentUser: UserProfile }) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [activeBroadcast, currentUser.id]);
+  }, [activeBroadcast]);
 
   function toggleStage(stage: TrainingStage) {
     if (targetStages.includes(stage)) {
@@ -740,10 +751,17 @@ function ConsultantPanel({ currentUser }: { currentUser: UserProfile }) {
         .select()
         .single();
 
-      if (!error && data) {
+      if (error) {
+        alert('Database broadcast error: ' + error.message);
+        console.error(error);
+        return;
+      }
+
+      if (data) {
         setActiveBroadcast(data);
       }
-    } catch (e) {
+    } catch (e: any) {
+      alert('Broadcast exception: ' + e.message);
       console.error(e);
     } finally {
       setIsBroadcasting(false);
